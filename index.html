@@ -1,40 +1,56 @@
 <html>
+<script src="mp4box.all.min.js"></script>
 <script src="mp4wasm.js"></script>
 <script>
-function asyncGetDuration(videoElement) {
-  return new Promise((resolve, reject) => {
-    const listener = (event) => {
-      videoElement.removeEventListener('durationchange', listener);
-      resolve(videoElement.duration);
-    };
-    videoElement.addEventListener('durationchange', listener);
-  });
-}
-
 async function reencode(file) {
+  const duration = 5;
+
   let timeToUpdateCurrentTime = 0;
   let timeToCreateImageBitmap = 0;
   let timeToEncodeBitmap = 0;
   let timeToMP4Mux = 0;
 
-  const videoElement = document.createElement('video');
-  videoElement.style = 'display: none';
+  const MP4BoxFile = MP4Box.createFile();
+  MP4BoxFile.onError = error => console.error(error);
+  MP4BoxFile.onReady = (info) => {
+    const track = info.videoTracks[0];
 
-  const sourceElement = document.createElement('source');
-  sourceElement.src = URL.createObjectURL(file);
-  videoElement.appendChild(sourceElement);
-  document.body.appendChild(videoElement);
+    let description;
+    const trak = MP4BoxFile.getTrackById(track.id);
+    for (const entry of trak.mdia.minf.stbl.stsd.entries) {
+      if (entry.avcC || entry.hvcC) {
+        const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+        if (entry.avcC) {
+          entry.avcC.write(stream);
+        } else {
+          entry.hvcC.write(stream);
+        }
+        description = new Uint8Array(stream.buffer, 8); // Remove the box header.
+        break;
+      }
+    }
 
-  const duration = await asyncGetDuration(videoElement);
+    decoder.configure({
+      codec: track.codec,
+      codedHeight: track.video.height,
+      codedWidth: track.video.width,
+      description,
+    });
 
-  const stream = videoElement.captureStream();
-  const tracks = stream.getVideoTracks();
-  const track = tracks[0];
-  if (!track) {
-    return null;
-  }
-  const trackProcessor = new window.MediaStreamTrackProcessor(track);
-  const reader = trackProcessor.readable.getReader();
+    MP4BoxFile.setExtractionOptions(track.id);
+    MP4BoxFile.start();
+  };
+  MP4BoxFile.onSamples = (track_id, ref, samples) => {
+    // Generate and emit an EncodedVideoChunk for each demuxed sample.
+    for (const sample of samples) {
+      decoder.decode(new EncodedVideoChunk({
+        type: sample.is_sync ? "key" : "delta",
+        timestamp: 1e6 * sample.cts / sample.timescale,
+        duration: 1e6 * sample.duration / sample.timescale,
+        data: sample.data
+      }));
+    }
+  };
 
   const MP4 = await new MP4Wasm();
 
@@ -61,6 +77,64 @@ async function reencode(file) {
       return outputFile.write(data) !== data.byteLength;
     }
   );
+
+  const decoder = new VideoDecoder({
+    async output(frame) {
+      timeToUpdateCurrentTime += performance.now() - now; now = performance.now();
+      const bitmap = await createImageBitmap(frame);
+      timeToCreateImageBitmap += performance.now() - now; now = performance.now();
+
+      const timestamp = frame.timestamp; // (1 / fps) * frameIndex * 1000000;
+      const groupOfPictures = 20;
+      const keyFrame = frameIndex % groupOfPictures === 0;
+      let videoFrame = new VideoFrame(bitmap, { timestamp });
+      encoder.encode(videoFrame, { keyFrame });
+      videoFrame.close();
+
+      const flushFrequency = 10;
+      if ((frameIndex + 1) % flushFrequency === 0) {
+        await encoder.flush();
+      }
+      frameIndex++;
+
+      progress.innerText = 
+        "Encoding frame " + frameIndex + " (" + Math.round(100 * currentTime / duration) + "%) at " +
+        Math.round(1000 * frameIndex / (performance.now() - startNow)) + " fps";
+
+
+      const total = timeToUpdateCurrentTime + timeToCreateImageBitmap + timeToEncodeBitmap + timeToMP4Mux;
+      console.log({
+        timeToUpdateCurrentTime: timeToUpdateCurrentTime / total * 100,
+        timeToCreateImageBitmap: timeToCreateImageBitmap / total * 100,
+        timeToEncodeBitmap: timeToEncodeBitmap / total * 100,
+        timeToMP4Mux: timeToMP4Mux / total * 100,
+      });
+
+      frame.close();
+
+      if (frameIndex === 1200) {
+        await encoder.flush();
+        encoder.close();
+
+        MP4.finalize_muxer(mux);
+        const data = outputFile.contents();
+
+        const url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = "download.mp4";
+        anchor.click();
+
+        const seconds = (performance.now() - startNow) / 1000;
+        progress.innerText = 
+          "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
+          Math.round(frameIndex / seconds) + " fps";
+      }
+    },
+    error(error) {
+      console.log(error);
+    }
+  });
 
   const encoder = new window.VideoEncoder({
     output(chunk) {
@@ -93,70 +167,16 @@ async function reencode(file) {
   let currentTime = 0;
   let frameIndex = 0;
   const startNow = performance.now();
-
-  const listener = async () => {
-    timeToUpdateCurrentTime += performance.now() - now; now = performance.now();
-    const frame = await reader.read();
-    if (frame.value) {
-      const bitmap = await createImageBitmap(frame.value);
-      timeToCreateImageBitmap += performance.now() - now; now = performance.now();
-
-      const timestamp = (1 / fps) * frameIndex * 1000000;
-      const groupOfPictures = 20;
-      const keyFrame = frameIndex % groupOfPictures === 0;
-      let videoFrame = new VideoFrame(bitmap, { timestamp });
-      encoder.encode(videoFrame, { keyFrame });
-      videoFrame.close();
-
-      const flushFrequency = 10;
-      if ((frameIndex + 1) % flushFrequency === 0) {
-        await encoder.flush();
-      }
-      frameIndex++;
-
-      progress.innerText = 
-        "Encoding frame #" + frameIndex + " (" + Math.round(100 * currentTime / duration) + "%) at " +
-        Math.round(1000 * frameIndex / (performance.now() - startNow)) + " fps";
-
-
-      const total = timeToUpdateCurrentTime + timeToCreateImageBitmap + timeToEncodeBitmap + timeToMP4Mux;
-      console.log({
-        timeToUpdateCurrentTime: timeToUpdateCurrentTime / total * 100,
-        timeToCreateImageBitmap: timeToCreateImageBitmap / total * 100,
-        timeToEncodeBitmap: timeToEncodeBitmap / total * 100,
-        timeToMP4Mux: timeToMP4Mux / total * 100,
-      });
-
-      frame.value.close();
-    }
-    if (currentTime < duration) {
-      currentTime += 1 / fps;
-      videoElement.currentTime = currentTime;
-    } else {
-      videoElement.removeEventListener('timeupdate', listener);
-      await encoder.flush();
-      encoder.close();
-
-      MP4.finalize_muxer(mux);
-      const data = outputFile.contents();
-
-      const url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "download.mp4";
-      anchor.click();
-
-      const seconds = (performance.now() - startNow) / 1000;
-      progress.innerText = 
-        "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
-        Math.round(frameIndex / seconds) + " fps";
-    }
-  }
-
   let now = performance.now();
 
-  videoElement.addEventListener('timeupdate', listener);
-  videoElement.currentTime = currentTime;
+
+  var reader = new FileReader();
+  reader.onload = function() {
+    this.result.fileStart = 0;
+    MP4BoxFile.appendBuffer(this.result);
+    MP4BoxFile.flush();
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 function createVirtualFile(initialCapacity = 1024 * 1024) {
