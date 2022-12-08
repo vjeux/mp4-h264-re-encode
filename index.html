@@ -1,0 +1,203 @@
+<html>
+<script src="mp4wasm.js"></script>
+<script>
+function asyncGetDuration(videoElement) {
+  return new Promise((resolve, reject) => {
+    const listener = (event) => {
+      videoElement.removeEventListener('durationchange', listener);
+      resolve(videoElement.duration);
+    };
+    videoElement.addEventListener('durationchange', listener);
+  });
+}
+
+async function reencode(file) {
+  let timeToUpdateCurrentTime = 0;
+  let timeToCreateImageBitmap = 0;
+  let timeToEncodeBitmap = 0;
+  let timeToMP4Mux = 0;
+
+  const videoElement = document.createElement('video');
+  videoElement.style = 'display: none';
+
+  const sourceElement = document.createElement('source');
+  sourceElement.src = URL.createObjectURL(file);
+  videoElement.appendChild(sourceElement);
+  document.body.appendChild(videoElement);
+
+  const duration = await asyncGetDuration(videoElement);
+
+  const stream = videoElement.captureStream();
+  const tracks = stream.getVideoTracks();
+  const track = tracks[0];
+  if (!track) {
+    return null;
+  }
+  const trackProcessor = new window.MediaStreamTrackProcessor(track);
+  const reader = trackProcessor.readable.getReader();
+
+  const MP4 = await new MP4Wasm();
+
+  const fps = 23.976;
+  const width = 1920;
+  const height = 1080;
+
+  const outputFile = createVirtualFile();
+  const mux = MP4.create_muxer(
+    {
+      width,
+      height,
+      fps,
+      fragmentation: false,
+      sequential: false,
+      hevc: false,
+    },
+    function mux_write(data_ptr, size, offset) {
+      // seek to byte offset in file
+      outputFile.seek(offset);
+      // get subarray of memory we are writing
+      const data = MP4.HEAPU8.subarray(data_ptr, data_ptr + size);
+      // write into virtual file
+      return outputFile.write(data) !== data.byteLength;
+    }
+  );
+
+  const encoder = new window.VideoEncoder({
+    output(chunk) {
+      timeToEncodeBitmap += performance.now() - now; now = performance.now();
+
+      const uint8 = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(uint8);
+      const p = MP4._malloc(uint8.byteLength);
+      MP4.HEAPU8.set(uint8, p);
+      MP4.mux_nal(mux, p, uint8.byteLength);
+      MP4._free(p);
+      timeToMP4Mux += performance.now() - now; now = performance.now();
+    },
+    error(error) {
+      console.error(error);
+    }
+  });
+
+  encoder.configure({
+    codec: 'avc1.4d0034',
+    width: width,
+    height: height,
+    avc: {
+      format: 'annexb',
+    },
+    hardwareAcceleration: 'prefer-hardware',
+    bitrate: 9_000_000,
+  });
+
+  let currentTime = 0;
+  let frameIndex = 0;
+  const startNow = performance.now();
+
+  const listener = async () => {
+    timeToUpdateCurrentTime += performance.now() - now; now = performance.now();
+    const frame = await reader.read();
+    if (frame.value) {
+      const bitmap = await createImageBitmap(frame.value);
+      timeToCreateImageBitmap += performance.now() - now; now = performance.now();
+
+      const timestamp = (1 / fps) * frameIndex * 1000000;
+      const groupOfPictures = 20;
+      const keyFrame = frameIndex % groupOfPictures === 0;
+      let videoFrame = new VideoFrame(bitmap, { timestamp });
+      encoder.encode(videoFrame, { keyFrame });
+      videoFrame.close();
+
+      const flushFrequency = 10;
+      if ((frameIndex + 1) % flushFrequency === 0) {
+        await encoder.flush();
+      }
+      frameIndex++;
+
+      progress.innerText = 
+        "Encoding frame #" + frameIndex + " (" + Math.round(100 * currentTime / duration) + "%) at " +
+        Math.round(1000 * frameIndex / (performance.now() - startNow)) + " fps";
+
+
+      const total = timeToUpdateCurrentTime + timeToCreateImageBitmap + timeToEncodeBitmap + timeToMP4Mux;
+      console.log({
+        timeToUpdateCurrentTime: timeToUpdateCurrentTime / total * 100,
+        timeToCreateImageBitmap: timeToCreateImageBitmap / total * 100,
+        timeToEncodeBitmap: timeToEncodeBitmap / total * 100,
+        timeToMP4Mux: timeToMP4Mux / total * 100,
+      });
+
+      frame.value.close();
+    }
+    if (currentTime < duration) {
+      currentTime += 1 / fps;
+      videoElement.currentTime = currentTime;
+    } else {
+      videoElement.removeEventListener('timeupdate', listener);
+      await encoder.flush();
+      encoder.close();
+
+      MP4.finalize_muxer(mux);
+      const data = outputFile.contents();
+
+      const url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "download.mp4";
+      anchor.click();
+
+      const seconds = (performance.now() - startNow) / 1000;
+      progress.innerText = 
+        "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
+        Math.round(frameIndex / seconds) + " fps";
+    }
+  }
+
+  let now = performance.now();
+
+  videoElement.addEventListener('timeupdate', listener);
+  videoElement.currentTime = currentTime;
+}
+
+function createVirtualFile(initialCapacity = 1024 * 1024) {
+  let cursor = 0;
+  let usedBytes = 0;
+  let contents = new Uint8Array(initialCapacity);
+  return {
+    contents: function () {
+      return contents.slice(0, usedBytes);
+    },
+    seek: function (offset) {
+      // offset in bytes
+      cursor = offset;
+    },
+    write: function (data) {
+      const size = data.byteLength;
+      expand(cursor + size);
+      contents.set(data, cursor);
+      cursor += size;
+      usedBytes = Math.max(usedBytes, cursor);
+      return size;
+    },
+  };
+
+  function expand(newCapacity) {
+    var prevCapacity = contents.length;
+    if (prevCapacity >= newCapacity) {
+      return; // No need to expand, the storage was already large enough.
+    }
+    newCapacity = Math.max(newCapacity, (prevCapacity * 2.0) >>> 0);
+    const oldContents = contents;
+    contents = new Uint8Array(newCapacity); // Allocate new storage.
+    if (usedBytes > 0) {
+      contents.set(oldContents.subarray(0, usedBytes), 0);
+    }
+  }
+}
+</script>
+
+<p>
+  Select a video to re-encode:
+  <input type="file" onchange="reencode(event.target.files[0])"></input>
+  <div id="progress"></div>
+</p>
