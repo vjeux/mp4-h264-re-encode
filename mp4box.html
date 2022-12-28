@@ -8,6 +8,7 @@
 
 async function reencode(file) {
   let decoder;
+  let encoder;
 
   let totalSampleCount = 0;
   let fps = 0;
@@ -15,6 +16,7 @@ async function reencode(file) {
   let height = 0;
   let duration = 0;
 
+  const mp4boxOutputFile = MP4Box.createFile();
   const mp4boxInputFile = MP4Box.createFile();
   mp4boxInputFile.onError = error => console.error(error);
   mp4boxInputFile.onReady = async (info) => {
@@ -25,7 +27,6 @@ async function reencode(file) {
     height = track.track_height;
     duration = track.movie_duration;
 
-    const mp4boxOutputFile = MP4Box.createFile();
     let trackID = null;
 
     decoder = new VideoDecoder({
@@ -44,23 +45,11 @@ async function reencode(file) {
         }
         frameIndex++;
 
-        progress.innerText = 
+        progress.innerText =
           "Encoding frame " + frameIndex + " (" + Math.round(100 * frameIndex / totalSampleCount) + "%) at " +
           Math.round(1000 * frameIndex / (performance.now() - startNow)) + " fps";
 
         frame.close();
-
-        if (frameIndex === totalSampleCount - 2) {
-          await encoder.flush();
-          encoder.close();
-
-          mp4boxOutputFile.save("mp4box.mp4");
-
-          const seconds = (performance.now() - startNow) / 1000;
-          progress.innerText = 
-            "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
-            Math.round(frameIndex / seconds) + " fps";
-        }
       },
       error(error) {
         console.log(error);
@@ -89,7 +78,7 @@ async function reencode(file) {
       description,
     });
 
-    const encoder = new VideoEncoder({
+    encoder = new VideoEncoder({
       output(chunk) {
         let uint8 = new Uint8Array(chunk.byteLength);
         chunk.copyTo(uint8);
@@ -201,7 +190,7 @@ async function reencode(file) {
     mp4boxInputFile.setExtractionOptions(track.id);
     mp4boxInputFile.start();
   };
-  mp4boxInputFile.onSamples = (track_id, ref, samples) => {
+  mp4boxInputFile.onSamples = async (track_id, ref, samples) => {
     // Generate and emit an EncodedVideoChunk for each demuxed sample.
     for (const sample of samples) {
       decoder.decode(new EncodedVideoChunk({
@@ -211,6 +200,16 @@ async function reencode(file) {
         data: sample.data
       }));
     }
+    await decoder.flush();
+    await encoder.flush();
+    encoder.close();
+
+    mp4boxOutputFile.save("mp4box.mp4");
+
+    const seconds = (performance.now() - startNow) / 1000;
+    progress.innerText =
+      "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
+      Math.round(frameIndex / seconds) + " fps";
   };
 
   let currentTime = 0;
