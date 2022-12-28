@@ -1,0 +1,234 @@
+<html>
+<script src="mp4box.all.js"></script>
+<script>
+// Useful tools:
+// http://mp4parser.com/
+// https://hexed.it/
+// https://gpac.github.io/mp4box.js/test/filereader.html
+
+async function reencode(file) {
+  let decoder;
+
+  let totalSampleCount = 0;
+  let fps = 0;
+  let width = 0;
+  let height = 0;
+  let duration = 0;
+
+  const mp4boxInputFile = MP4Box.createFile();
+  mp4boxInputFile.onError = error => console.error(error);
+  mp4boxInputFile.onReady = async (info) => {
+    const track = info.videoTracks[0];
+    totalSampleCount = track.nb_samples;
+    fps = (track.nb_samples / track.movie_duration) * 1000;
+    width = track.track_width;
+    height = track.track_height;
+    duration = track.movie_duration;
+
+    const mp4boxOutputFile = MP4Box.createFile();
+    let trackID = null;
+
+    decoder = new VideoDecoder({
+      async output(frame) {
+        const bitmap = await createImageBitmap(frame);
+
+        const groupOfPictures = 20;
+        const keyFrame = frameIndex % groupOfPictures === 0;
+        let videoFrame = new VideoFrame(bitmap, { timestamp: frame.timestamp });
+        encoder.encode(videoFrame, { keyFrame });
+        videoFrame.close();
+
+        const flushFrequency = 10;
+        if ((frameIndex + 1) % flushFrequency === 0) {
+          await encoder.flush();
+        }
+        frameIndex++;
+
+        progress.innerText = 
+          "Encoding frame " + frameIndex + " (" + Math.round(100 * frameIndex / totalSampleCount) + "%) at " +
+          Math.round(1000 * frameIndex / (performance.now() - startNow)) + " fps";
+
+        frame.close();
+
+        if (frameIndex === totalSampleCount - 2) {
+          await encoder.flush();
+          encoder.close();
+
+          mp4boxOutputFile.save("mp4box.mp4");
+
+          const seconds = (performance.now() - startNow) / 1000;
+          progress.innerText = 
+            "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
+            Math.round(frameIndex / seconds) + " fps";
+        }
+      },
+      error(error) {
+        console.log(error);
+      }
+    });
+
+    let description;
+    const trak = mp4boxInputFile.getTrackById(track.id);
+    for (const entry of trak.mdia.minf.stbl.stsd.entries) {
+      if (entry.avcC || entry.hvcC) {
+        const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+        if (entry.avcC) {
+          entry.avcC.write(stream);
+        } else {
+          entry.hvcC.write(stream);
+        }
+        description = new Uint8Array(stream.buffer, 8); // Remove the box header.
+        break;
+      }
+    }
+
+    decoder.configure({
+      codec: track.codec,
+      codedHeight: track.video.height,
+      codedWidth: track.video.width,
+      description,
+    });
+
+    const encoder = new VideoEncoder({
+      output(chunk) {
+        let uint8 = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(uint8);
+
+        // https://stackoverflow.com/questions/53992918/about-fmp4-encoding-how-to-fill-the-mdat-box-wit-h264-frame
+
+        // Find the offset of the first NAL that contains picture data (of type 5 or 1).
+        // Note that it is not safe if the initial NAL contains escaped 00 00 00 01 sequences
+        let startOfPictureNAL = null;
+        let pps_start = null;
+        let pps_end = null;
+        let sps_start = null;
+        let sps_end = null;
+        for (let i = 0; i < chunk.byteLength; ++i) {
+          if (
+            uint8[i] === 0 &&
+            uint8[i + 1] === 0 &&
+            uint8[i + 2] === 0 &&
+            uint8[i + 3] === 1
+          ) {
+            const type = uint8[i + 4] & 31;
+
+            if (pps_start !== null && pps_end === null) {
+              pps_end = i;
+            }
+            if (sps_start !== null && sps_end === null) {
+              sps_end = i;
+            }
+
+            if (type === 5 || type === 1) {
+              startOfPictureNAL = i;
+              break;
+            } else if (type === 7) {
+              pps_start = i + 4;
+            } else if (type === 8) {
+              sps_start = i + 4;
+            }
+          }
+        }
+
+        if (startOfPictureNAL === null) {
+          throw "Couldn't find Picture NAL";
+        }
+
+        if (trackID === null) {
+          trackID = mp4boxOutputFile.addTrack({
+            width,
+            height,
+            brands: ['mp42', 'isom'],
+            timescale: 90000,
+            language: 21956,
+            name: 'VideoHandler',
+
+            // https://gist.github.com/uupaa/8493378ec15f644a3d2b
+            avcDecoderConfigRecord: (new Uint8Array([
+              1, // configurationVersion
+              77, // AVCProfileIndication
+              0, // profile_compatibility
+              40, // AVCLevelIndication
+              0b111111 << 2 ^ // reserved
+                3, // lengthSizeMinusOne
+              0b111 << 5 ^ // reserved
+              
+                1, // numOfSequenceParameterSets
+              (pps_end - pps_start) >> 8, (pps_end - pps_start) >> 0, // sequenceParameterSetLength
+              ...uint8.slice(pps_start, pps_end), // sequenceParameterSetNALUnit
+
+              1, // numOfPictureParameterSets
+              (sps_end - sps_start) >> 8, (sps_end - sps_start) >> 0, // pictureParameterSetLength
+              ...uint8.slice(sps_start, sps_end), // pictureParameterSetNALUnit
+            ])).buffer,
+          });
+        }
+
+        const size = chunk.byteLength - startOfPictureNAL - 4;
+
+        // Remove all the NALs before the ones containing the picture.
+        // Note that this is not safe in the general case, this assume that
+        // the NAL with the picture is the last one.
+        uint8 = uint8.slice(startOfPictureNAL);
+
+        // Replace "00 00 00 01" sequence by the size encoded in a 32 bits number
+        uint8[0] = size >> 24;
+        uint8[1] = size >> 16;
+        uint8[2] = size >> 8;
+        uint8[3] = size >> 0;
+
+        mp4boxOutputFile.addSample(trackID, uint8, {
+          duration: 1491,
+          is_sync: chunk.type === 'key',
+        });
+      },
+      error(error) {
+        console.error(error);
+      }
+    });
+
+    encoder.configure({
+      codec: 'avc1.4d0034',
+      width,
+      height,
+      avc: {
+        format: 'annexb',
+      },
+      hardwareAcceleration: 'prefer-hardware',
+      bitrate: 9_000_000,
+    });
+
+    mp4boxInputFile.setExtractionOptions(track.id);
+    mp4boxInputFile.start();
+  };
+  mp4boxInputFile.onSamples = (track_id, ref, samples) => {
+    // Generate and emit an EncodedVideoChunk for each demuxed sample.
+    for (const sample of samples) {
+      decoder.decode(new EncodedVideoChunk({
+        type: sample.is_sync ? "key" : "delta",
+        timestamp: 1e6 * sample.cts / sample.timescale,
+        duration: 1e6 * sample.duration / sample.timescale,
+        data: sample.data
+      }));
+    }
+  };
+
+  let currentTime = 0;
+  let frameIndex = 0;
+  const startNow = performance.now();
+
+  var reader = new FileReader();
+  reader.onload = function() {
+    this.result.fileStart = 0;
+    mp4boxInputFile.appendBuffer(this.result);
+    mp4boxInputFile.flush();
+  };
+  reader.readAsArrayBuffer(file);
+}
+</script>
+
+<p>
+  Select a video to re-encode:
+  <input type="file" onchange="reencode(event.target.files[0])"></input>
+  <div id="progress"></div>
+</p>

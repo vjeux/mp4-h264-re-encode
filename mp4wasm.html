@@ -1,14 +1,13 @@
 <html>
-<script src="mp4box.all.min.js"></script>
+<script src="mp4box.all.js"></script>
 <script src="mp4wasm.js"></script>
 <script>
+// Useful tools:
+// http://mp4parser.com/
+// https://hexed.it/
+// https://gpac.github.io/mp4box.js/test/filereader.html
 
 async function reencode(file) {
-  let timeToUpdateCurrentTime = 0;
-  let timeToCreateImageBitmap = 0;
-  let timeToEncodeBitmap = 0;
-  let timeToMP4Mux = 0;
-
   let decoder;
 
   let totalSampleCount = 0;
@@ -17,10 +16,9 @@ async function reencode(file) {
   let height = 0;
   let duration = 0;
 
-  const MP4BoxFile = MP4Box.createFile();
-  MP4BoxFile.onError = error => console.error(error);
-  MP4BoxFile.onReady = async (info) => {
-    console.log(info);
+  const mp4BoxInputFile = MP4Box.createFile();
+  mp4BoxInputFile.onError = error => console.error(error);
+  mp4BoxInputFile.onReady = async (info) => {
     const track = info.videoTracks[0];
     totalSampleCount = track.nb_samples;
     fps = (track.nb_samples / track.movie_duration) * 1000;
@@ -28,53 +26,31 @@ async function reencode(file) {
     height = track.track_height;
     duration = track.movie_duration;
 
-    let description;
-    const trak = MP4BoxFile.getTrackById(track.id);
-    for (const entry of trak.mdia.minf.stbl.stsd.entries) {
-      if (entry.avcC || entry.hvcC) {
-        const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
-        if (entry.avcC) {
-          entry.avcC.write(stream);
-        } else {
-          entry.hvcC.write(stream);
-        }
-        description = new Uint8Array(stream.buffer, 8); // Remove the box header.
-        break;
-      }
-    }
-
-    const MP4 = await new MP4Wasm();
-
-    const outputFile = createVirtualFile();
-    const mux = MP4.create_muxer(
+    const mp4wasm = await new MP4Wasm();
+    const mp4wasmOutputFile = createVirtualFile();
+    const mp4wasmMux = mp4wasm.create_muxer(
       {
         width,
         height,
         fps,
-        fragmentation: false,
+        fragmentation: true,
         sequential: false,
         hevc: false,
       },
       function mux_write(data_ptr, size, offset) {
-        // seek to byte offset in file
-        outputFile.seek(offset);
-        // get subarray of memory we are writing
-        const data = MP4.HEAPU8.subarray(data_ptr, data_ptr + size);
-        // write into virtual file
-        return outputFile.write(data) !== data.byteLength;
+        mp4wasmOutputFile.seek(offset);
+        const data = mp4wasm.HEAPU8.subarray(data_ptr, data_ptr + size);
+        return mp4wasmOutputFile.write(data) !== data.byteLength;
       }
     );
 
     decoder = new VideoDecoder({
       async output(frame) {
-        timeToUpdateCurrentTime += performance.now() - now; now = performance.now();
         const bitmap = await createImageBitmap(frame);
-        timeToCreateImageBitmap += performance.now() - now; now = performance.now();
 
-        const timestamp = frame.timestamp; // (1 / fps) * frameIndex * 1000000;
         const groupOfPictures = 20;
         const keyFrame = frameIndex % groupOfPictures === 0;
-        let videoFrame = new VideoFrame(bitmap, { timestamp });
+        let videoFrame = new VideoFrame(bitmap, { timestamp: frame.timestamp });
         encoder.encode(videoFrame, { keyFrame });
         videoFrame.close();
 
@@ -85,18 +61,8 @@ async function reencode(file) {
         frameIndex++;
 
         progress.innerText = 
-          "Encoding frame " + frameIndex + " (" + Math.round(100 * currentTime / duration) + "%) at " +
+          "Encoding frame " + frameIndex + " (" + Math.round(100 * frameIndex / totalSampleCount) + "%) at " +
           Math.round(1000 * frameIndex / (performance.now() - startNow)) + " fps";
-
-
-        const total = timeToUpdateCurrentTime + timeToCreateImageBitmap + timeToEncodeBitmap + timeToMP4Mux;
-
-        console.log({
-          timeToUpdateCurrentTime: timeToUpdateCurrentTime / total * 100,
-          timeToCreateImageBitmap: timeToCreateImageBitmap / total * 100,
-          timeToEncodeBitmap: timeToEncodeBitmap / total * 100,
-          timeToMP4Mux: timeToMP4Mux / total * 100,
-        });
 
         frame.close();
 
@@ -104,13 +70,13 @@ async function reencode(file) {
           await encoder.flush();
           encoder.close();
 
-          MP4.finalize_muxer(mux);
-          const data = outputFile.contents();
+          mp4wasm.finalize_muxer(mp4wasmMux);
+          const data = mp4wasmOutputFile.contents();
 
-          const url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
-          const anchor = document.createElement("a");
+          let url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
+          let anchor = document.createElement("a");
           anchor.href = url;
-          anchor.download = "download.mp4";
+          anchor.download = "mp4wasm.mp4";
           anchor.click();
 
           const seconds = (performance.now() - startNow) / 1000;
@@ -124,6 +90,21 @@ async function reencode(file) {
       }
     });
 
+    let description;
+    const trak = mp4BoxInputFile.getTrackById(track.id);
+    for (const entry of trak.mdia.minf.stbl.stsd.entries) {
+      if (entry.avcC || entry.hvcC) {
+        const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+        if (entry.avcC) {
+          entry.avcC.write(stream);
+        } else {
+          entry.hvcC.write(stream);
+        }
+        description = new Uint8Array(stream.buffer, 8); // Remove the box header.
+        break;
+      }
+    }
+
     decoder.configure({
       codec: track.codec,
       codedHeight: track.video.height,
@@ -131,17 +112,14 @@ async function reencode(file) {
       description,
     });
 
-    const encoder = new window.VideoEncoder({
+    const encoder = new VideoEncoder({
       output(chunk) {
-        timeToEncodeBitmap += performance.now() - now; now = performance.now();
-
-        const uint8 = new Uint8Array(chunk.byteLength);
+        let uint8 = new Uint8Array(chunk.byteLength);
         chunk.copyTo(uint8);
-        const p = MP4._malloc(uint8.byteLength);
-        MP4.HEAPU8.set(uint8, p);
-        MP4.mux_nal(mux, p, uint8.byteLength);
-        MP4._free(p);
-        timeToMP4Mux += performance.now() - now; now = performance.now();
+        const p = mp4wasm._malloc(uint8.byteLength);
+        mp4wasm.HEAPU8.set(uint8, p);
+        mp4wasm.mux_nal(mp4wasmMux, p, uint8.byteLength);
+        mp4wasm._free(p);
       },
       error(error) {
         console.error(error);
@@ -150,8 +128,8 @@ async function reencode(file) {
 
     encoder.configure({
       codec: 'avc1.4d0034',
-      width: width,
-      height: height,
+      width,
+      height,
       avc: {
         format: 'annexb',
       },
@@ -159,10 +137,10 @@ async function reencode(file) {
       bitrate: 9_000_000,
     });
 
-    MP4BoxFile.setExtractionOptions(track.id);
-    MP4BoxFile.start();
+    mp4BoxInputFile.setExtractionOptions(track.id);
+    mp4BoxInputFile.start();
   };
-  MP4BoxFile.onSamples = (track_id, ref, samples) => {
+  mp4BoxInputFile.onSamples = (track_id, ref, samples) => {
     // Generate and emit an EncodedVideoChunk for each demuxed sample.
     for (const sample of samples) {
       decoder.decode(new EncodedVideoChunk({
@@ -177,13 +155,12 @@ async function reencode(file) {
   let currentTime = 0;
   let frameIndex = 0;
   const startNow = performance.now();
-  let now = performance.now();
 
   var reader = new FileReader();
   reader.onload = function() {
     this.result.fileStart = 0;
-    MP4BoxFile.appendBuffer(this.result);
-    MP4BoxFile.flush();
+    mp4BoxInputFile.appendBuffer(this.result);
+    mp4BoxInputFile.flush();
   };
   reader.readAsArrayBuffer(file);
 }
