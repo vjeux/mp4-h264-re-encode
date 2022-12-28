@@ -1,6 +1,6 @@
 # video-encoding-benchmark
 
-This repo is a demonstration of a pure re-encoding of an mp4 video file with the web APIs.
+This repo is a demonstration of a pure re-encoding of an mp4-h264 video file with the web APIs.
 
 There are four steps to re-encode a video:
 * Extracting samples from the mp4 file format (demuxing), done with [mp4box.js](https://github.com/gpac/mp4box.js/).
@@ -101,7 +101,7 @@ for (const sample of samples) {
 
 So far, the APIs were a bit convoluted but it was fairly generic. Now we're going to need to do some H264-specific shenanigans. In order to decode a video frame, h264 has a bunch of configuration options called PPS (Picture Parameter Set) & SPS (Sequence Parameter Set). Their content isn't super interesting, you can [read on it here](https://www.cardinalpeak.com/blog/the-h-264-sequence-parameter-set). We need to find them and give them to the decoder.
 
-The inside of mp4 files is structured as many nested boxes that contain JSON-like values (all encoded differently using a binary format). The box `trak.mdia.minf.stbl.stsd.avcC` contains the PPS and SPS configuraiton we are looking after. So we use the following piece of code to extract it out and pass it to the encoder.
+The inside of mp4 files is structured as many nested boxes that contain JSON-like values (all encoded differently using a binary format). The box `trak.mdia.minf.stbl.stsd.avcC` contains the PPS and SPS configuration we are looking after. So we use the following piece of code to extract it out and pass it to the encoder.
 
 ```javascript
 let description;
