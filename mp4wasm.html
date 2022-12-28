@@ -9,6 +9,11 @@
 
 async function reencode(file) {
   let decoder;
+  let encoder;
+
+  let mp4wasm;
+  let mp4wasmOutputFile;
+  let mp4wasmMux;
 
   let totalSampleCount = 0;
   let fps = 0;
@@ -26,9 +31,9 @@ async function reencode(file) {
     height = track.track_height;
     duration = track.movie_duration;
 
-    const mp4wasm = await new MP4Wasm();
-    const mp4wasmOutputFile = createVirtualFile();
-    const mp4wasmMux = mp4wasm.create_muxer(
+    mp4wasm = await new MP4Wasm();
+    mp4wasmOutputFile = createVirtualFile();
+    mp4wasmMux = mp4wasm.create_muxer(
       {
         width,
         height,
@@ -60,30 +65,11 @@ async function reencode(file) {
         }
         frameIndex++;
 
-        progress.innerText = 
+        progress.innerText =
           "Encoding frame " + frameIndex + " (" + Math.round(100 * frameIndex / totalSampleCount) + "%) at " +
           Math.round(1000 * frameIndex / (performance.now() - startNow)) + " fps";
 
         frame.close();
-
-        if (frameIndex === totalSampleCount - 2) {
-          await encoder.flush();
-          encoder.close();
-
-          mp4wasm.finalize_muxer(mp4wasmMux);
-          const data = mp4wasmOutputFile.contents();
-
-          let url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
-          let anchor = document.createElement("a");
-          anchor.href = url;
-          anchor.download = "mp4wasm.mp4";
-          anchor.click();
-
-          const seconds = (performance.now() - startNow) / 1000;
-          progress.innerText = 
-            "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
-            Math.round(frameIndex / seconds) + " fps";
-        }
       },
       error(error) {
         console.log(error);
@@ -112,7 +98,7 @@ async function reencode(file) {
       description,
     });
 
-    const encoder = new VideoEncoder({
+    encoder = new VideoEncoder({
       output(chunk) {
         let uint8 = new Uint8Array(chunk.byteLength);
         chunk.copyTo(uint8);
@@ -140,7 +126,7 @@ async function reencode(file) {
     mp4BoxInputFile.setExtractionOptions(track.id);
     mp4BoxInputFile.start();
   };
-  mp4BoxInputFile.onSamples = (track_id, ref, samples) => {
+  mp4BoxInputFile.onSamples = async (track_id, ref, samples) => {
     // Generate and emit an EncodedVideoChunk for each demuxed sample.
     for (const sample of samples) {
       decoder.decode(new EncodedVideoChunk({
@@ -150,6 +136,25 @@ async function reencode(file) {
         data: sample.data
       }));
     }
+
+    await decoder.flush();
+    await encoder.flush();
+    encoder.close();
+
+    mp4wasm.finalize_muxer(mp4wasmMux);
+    const data = mp4wasmOutputFile.contents();
+
+    let url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
+    let anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "mp4wasm.mp4";
+    anchor.click();
+
+    const seconds = (performance.now() - startNow) / 1000;
+    progress.innerText =
+      "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
+      Math.round(frameIndex / seconds) + " fps";
+
   };
 
   let currentTime = 0;
