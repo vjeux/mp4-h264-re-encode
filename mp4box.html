@@ -79,49 +79,9 @@ async function reencode(file) {
     });
 
     encoder = new VideoEncoder({
-      output(chunk) {
+      output(chunk, metadata) {
         let uint8 = new Uint8Array(chunk.byteLength);
         chunk.copyTo(uint8);
-
-        // https://stackoverflow.com/questions/53992918/about-fmp4-encoding-how-to-fill-the-mdat-box-wit-h264-frame
-
-        // Find the offset of the first NAL that contains picture data (of type 5 or 1).
-        // Note that it is not safe if the initial NAL contains escaped 00 00 00 01 sequences
-        let startOfPictureNAL = null;
-        let pps_start = null;
-        let pps_end = null;
-        let sps_start = null;
-        let sps_end = null;
-        for (let i = 0; i < chunk.byteLength; ++i) {
-          if (
-            uint8[i] === 0 &&
-            uint8[i + 1] === 0 &&
-            uint8[i + 2] === 0 &&
-            uint8[i + 3] === 1
-          ) {
-            const type = uint8[i + 4] & 31;
-
-            if (pps_start !== null && pps_end === null) {
-              pps_end = i;
-            }
-            if (sps_start !== null && sps_end === null) {
-              sps_end = i;
-            }
-
-            if (type === 5 || type === 1) {
-              startOfPictureNAL = i;
-              break;
-            } else if (type === 7) {
-              pps_start = i + 4;
-            } else if (type === 8) {
-              sps_start = i + 4;
-            }
-          }
-        }
-
-        if (startOfPictureNAL === null) {
-          throw "Couldn't find Picture NAL";
-        }
 
         if (trackID === null) {
           trackID = mp4boxOutputFile.addTrack({
@@ -131,40 +91,9 @@ async function reencode(file) {
             timescale: 90000,
             language: 21956,
             name: 'VideoHandler',
-
-            // https://gist.github.com/uupaa/8493378ec15f644a3d2b
-            avcDecoderConfigRecord: (new Uint8Array([
-              1, // configurationVersion
-              77, // AVCProfileIndication
-              0, // profile_compatibility
-              40, // AVCLevelIndication
-              0b111111 << 2 ^ // reserved
-                3, // lengthSizeMinusOne
-              0b111 << 5 ^ // reserved
-              
-                1, // numOfSequenceParameterSets
-              (pps_end - pps_start) >> 8, (pps_end - pps_start) >> 0, // sequenceParameterSetLength
-              ...uint8.slice(pps_start, pps_end), // sequenceParameterSetNALUnit
-
-              1, // numOfPictureParameterSets
-              (sps_end - sps_start) >> 8, (sps_end - sps_start) >> 0, // pictureParameterSetLength
-              ...uint8.slice(sps_start, sps_end), // pictureParameterSetNALUnit
-            ])).buffer,
+            avcDecoderConfigRecord: metadata.decoderConfig.description
           });
         }
-
-        const size = chunk.byteLength - startOfPictureNAL - 4;
-
-        // Remove all the NALs before the ones containing the picture.
-        // Note that this is not safe in the general case, this assume that
-        // the NAL with the picture is the last one.
-        uint8 = uint8.slice(startOfPictureNAL);
-
-        // Replace "00 00 00 01" sequence by the size encoded in a 32 bits number
-        uint8[0] = size >> 24;
-        uint8[1] = size >> 16;
-        uint8[2] = size >> 8;
-        uint8[3] = size >> 0;
 
         mp4boxOutputFile.addSample(trackID, uint8, {
           duration: 1491,
@@ -180,9 +109,6 @@ async function reencode(file) {
       codec: 'avc1.4d0034',
       width,
       height,
-      avc: {
-        format: 'annexb',
-      },
       hardwareAcceleration: 'prefer-hardware',
       bitrate: 9_000_000,
     });
