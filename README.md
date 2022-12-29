@@ -126,3 +126,26 @@ decoder.configure({
   description,
 });
 ```
+
+## Encoding
+
+We're doing this little dance again of creating an encoder and configuring it. I found somewhere the codec `avc1.4d0034` which seems to be working. Its longer description seems to be `MPEG-4 AVC Main Level 5.2` and AVC is synonymous with H264 if you are curious. 
+
+```javascript
+encoder = new VideoEncoder({
+  output(chunk) {
+    // put the encoded chunk into a mp4 file
+  },
+  error(error) {
+    console.error(error);
+  }
+});
+
+encoder.configure({
+  codec: 'avc1.4d0034',
+  width,
+  height,
+  hardwareAcceleration: 'prefer-hardware',
+  bitrate: 9_000_000,
+});
+```
