@@ -21,7 +21,6 @@ async function reencode(file) {
   mp4boxInputFile.onError = error => console.error(error);
   mp4boxInputFile.onReady = async (info) => {
     const track = info.videoTracks[0];
-    totalSampleCount = track.nb_samples;
     fps = (track.nb_samples / track.movie_duration) * 1000;
     width = track.track_width;
     height = track.track_height;
@@ -33,26 +32,17 @@ async function reencode(file) {
       async output(frame) {
         const bitmap = await createImageBitmap(frame);
 
-        const groupOfPictures = 20;
-        const keyFrame = frameIndex % groupOfPictures === 0;
+        const keyFrameEveryHowManySeconds = 2;
+        const keyFrame = decodedFrameIndex % (Math.round(fps) * keyFrameEveryHowManySeconds) === 0;
         let videoFrame = new VideoFrame(bitmap, { timestamp: frame.timestamp });
         encoder.encode(videoFrame, { keyFrame });
-        videoFrame.close();
-
-        const flushFrequency = 10;
-        if ((frameIndex + 1) % flushFrequency === 0) {
-          await encoder.flush();
-        }
-        frameIndex++;
-
-        progress.innerText =
-          "Encoding frame " + frameIndex + " (" + Math.round(100 * frameIndex / totalSampleCount) + "%) at " +
-          Math.round(1000 * frameIndex / (performance.now() - startNow)) + " fps";
-
+        decodedFrameIndex++;
         frame.close();
+        videoFrame.close();
+        displayProgress();
       },
       error(error) {
-        console.log(error);
+        console.error(error);
       }
     });
 
@@ -75,6 +65,7 @@ async function reencode(file) {
       codec: track.codec,
       codedHeight: track.video.height,
       codedWidth: track.video.width,
+      hardwareAcceleration: 'prefer-hardware',
       description,
     });
 
@@ -87,10 +78,7 @@ async function reencode(file) {
           trackID = mp4boxOutputFile.addTrack({
             width,
             height,
-            brands: ['mp42', 'isom'],
             timescale: 90000,
-            language: 21956,
-            name: 'VideoHandler',
             avcDecoderConfigRecord: metadata.decoderConfig.description
           });
         }
@@ -110,14 +98,26 @@ async function reencode(file) {
       width,
       height,
       hardwareAcceleration: 'prefer-hardware',
-      bitrate: 9_000_000,
+      bitrate: 20_000_000,
     });
+
+    encoder.ondequeue = function(event) {
+      encodedFrameIndex++;
+      displayProgress();
+    };
 
     mp4boxInputFile.setExtractionOptions(track.id);
     mp4boxInputFile.start();
   };
+
+  function displayProgress() {
+    progress.innerText =
+      "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / totalSampleCount) + "%)\n" +
+      "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / totalSampleCount) + "%)\n";
+  }
+
   mp4boxInputFile.onSamples = async (track_id, ref, samples) => {
-    // Generate and emit an EncodedVideoChunk for each demuxed sample.
+    totalSampleCount = Object.keys(samples).length;
     for (const sample of samples) {
       decoder.decode(new EncodedVideoChunk({
         type: sample.is_sync ? "key" : "delta",
@@ -129,17 +129,19 @@ async function reencode(file) {
     await decoder.flush();
     await encoder.flush();
     encoder.close();
+    decoder.close();
 
     mp4boxOutputFile.save("mp4box.mp4");
 
     const seconds = (performance.now() - startNow) / 1000;
     progress.innerText =
-      "Encoded in " + frameIndex + " frames in " + Math.round(seconds) + "s at " +
-      Math.round(frameIndex / seconds) + " fps";
+      "Encoded in " + encodedFrameIndex + " frames in " + Math.round(seconds) + "s at " +
+      Math.round(encodedFrameIndex / seconds) + " fps";
   };
 
   let currentTime = 0;
-  let frameIndex = 0;
+  let decodedFrameIndex = 0;
+  let encodedFrameIndex = 0;
   const startNow = performance.now();
 
   var reader = new FileReader();
