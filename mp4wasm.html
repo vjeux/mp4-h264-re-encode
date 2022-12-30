@@ -156,7 +156,7 @@ async function reencode(file) {
 
     const seconds = (performance.now() - startNow) / 1000;
     progress.innerText =
-      "Encoded in " + encodedFrameIndex + " frames in " + Math.round(seconds) + "s at " +
+      "Encoded in " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
       Math.round(encodedFrameIndex / seconds) + " fps";
   };
 

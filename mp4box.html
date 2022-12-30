@@ -74,17 +74,23 @@ async function reencode(file) {
         let uint8 = new Uint8Array(chunk.byteLength);
         chunk.copyTo(uint8);
 
+        const timescale = 90000;
         if (trackID === null) {
           trackID = mp4boxOutputFile.addTrack({
             width,
             height,
-            timescale: 90000,
+            timescale,
             avcDecoderConfigRecord: metadata.decoderConfig.description
           });
         }
 
+        const duration = Math.round(
+          (track.movie_duration * (timescale / 1000))
+            / track.nb_samples
+        );
+
         mp4boxOutputFile.addSample(trackID, uint8, {
-          duration: 1491,
+          duration,
           is_sync: chunk.type === 'key',
         });
       },
@@ -135,7 +141,7 @@ async function reencode(file) {
 
     const seconds = (performance.now() - startNow) / 1000;
     progress.innerText =
-      "Encoded in " + encodedFrameIndex + " frames in " + Math.round(seconds) + "s at " +
+      "Encoded in " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
       Math.round(encodedFrameIndex / seconds) + " fps";
   };
 
