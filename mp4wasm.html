@@ -8,6 +8,8 @@
 // https://gpac.github.io/mp4box.js/test/filereader.html
 
 async function reencode(file) {
+  const startNow = performance.now();
+
   let decoder;
   let encoder;
 
@@ -15,16 +17,20 @@ async function reencode(file) {
   let mp4wasmOutputFile;
   let mp4wasmMux;
 
-  let totalSampleCount = 0;
-  let fps = 0;
-  let width = 0;
-  let height = 0;
-  let duration = 0;
+  let frameCount;
+  let fps;
+  let width;
+  let height;
+  let duration;
+
+  let decodedFrameIndex = 0;
+  let encodedFrameIndex = 0;
 
   const mp4BoxInputFile = MP4Box.createFile();
   mp4BoxInputFile.onError = error => console.error(error);
   mp4BoxInputFile.onReady = async (info) => {
     const track = info.videoTracks[0];
+    frameCount = track.nb_samples;
     fps = (track.nb_samples / track.movie_duration) * 1000;
     width = track.track_width;
     height = track.track_height;
@@ -97,6 +103,9 @@ async function reencode(file) {
         mp4wasm.HEAPU8.set(uint8, p);
         mp4wasm.mux_nal(mp4wasmMux, p, uint8.byteLength);
         mp4wasm._free(p);
+
+        encodedFrameIndex++;
+        displayProgress();
       },
       error(error) {
         console.error(error);
@@ -114,23 +123,17 @@ async function reencode(file) {
       bitrate: 20_000_000,
     });
 
-    encoder.ondequeue = function(event) {
-      encodedFrameIndex++;
-      displayProgress();
-    };
-
     mp4BoxInputFile.setExtractionOptions(track.id);
     mp4BoxInputFile.start();
   };
 
   function displayProgress() {
     progress.innerText =
-      "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / totalSampleCount) + "%)\n" +
-      "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / totalSampleCount) + "%)\n";
+      "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / frameCount) + "%)\n" +
+      "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / frameCount) + "%)\n";
   }
 
   mp4BoxInputFile.onSamples = async (track_id, ref, samples) => {
-    totalSampleCount = Object.keys(samples).length;
     for (const sample of samples) {
       decoder.decode(new EncodedVideoChunk({
         type: sample.is_sync ? "key" : "delta",
@@ -159,11 +162,6 @@ async function reencode(file) {
       "Encoded in " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
       Math.round(encodedFrameIndex / seconds) + " fps";
   };
-
-  let currentTime = 0;
-  let decodedFrameIndex = 0;
-  let encodedFrameIndex = 0;
-  const startNow = performance.now();
 
   var reader = new FileReader();
   reader.onload = function() {
