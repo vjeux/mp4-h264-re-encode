@@ -76,8 +76,8 @@ We first start by creating a decoder object with its output callback. We can use
 
 ```javascript
 decoder = new VideoDecoder({
-  async output(frame) {
-    const bitmap = await createImageBitmap(frame);
+  async output(inputFrame) {
+    const bitmap = await createImageBitmap(inputFrame);
     frame.close();
   },
   error(error) {
@@ -148,4 +148,27 @@ encoder.configure({
   hardwareAcceleration: 'prefer-hardware',
   bitrate: 9_000_000,
 });
+```
+
+In the decoder output callback, we first create a VideoFrame object with the bitmap we just decoded.
+
+```javascript
+const outputFrame = new VideoFrame(bitmap, { timestamp: inputFrame.timestamp });
+```
+
+If we don't do anything, all the frames will be encoded as delta frames. This is optimal in terms of file size but scrubbing through the video will be very slow as we need to go from the beginning and apply the delta frames one by one until we can get the bitmap. On the other hand, making every frame being a key frame will massively bloat the video size. In the 5s video example, it goes from 5mb to 30mb!
+
+The heuristic that people seem to be using in practice is one key frame every few seconds. Youtube is reported to do it every 2 seconds, some mention one up to every 10 seconds. Here's the implementation for doing it every 2 seconds.
+
+```javascript
+const keyFrameEveryHowManySeconds = 2;
+const keyFrame = decodedFrameIndex % (Math.round(fps) * keyFrameEveryHowManySeconds) === 0;
+encoder.encode(outputFrame, { keyFrame });
+```
+
+Again, we need to do manual memory management, we need to close the input and output frames to release them to the garbage collector so they can be reclaimed. Fortunately, we are only doing a streaming process with a single frame so memory management is trivial. It'll likely be more challenging when we want to composite multiple input video frames into a single output frame.
+
+```javascript
+inputFrame.close();
+outputFrame.close();
 ```
