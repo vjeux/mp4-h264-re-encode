@@ -116,7 +116,7 @@ async function reencode(file) {
       bitrate: 20_000_000,
     });
 
-    mp4boxInputFile.setExtractionOptions(track.id);
+    mp4boxInputFile.setExtractionOptions(track.id, null, {nbSamples: Infinity});
     mp4boxInputFile.start();
   };
 
