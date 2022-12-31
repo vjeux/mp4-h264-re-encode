@@ -90,13 +90,17 @@ async function reencode(file) {
           });
         }
 
-        const duration = Math.round(
-          (track.movie_duration * (timescale / 1000))
-            / track.nb_samples
+        const totalDuration = track.movie_duration * (timescale / 1000);
+        const currentTimestamp = Math.round(
+           totalDuration * (encodedFrameIndex / track.nb_samples)
         );
+        const nextTimestamp = Math.round(
+           totalDuration * ((encodedFrameIndex + 1) / track.nb_samples)
+        );
+        const sampleDuration = nextTimestamp - currentTimestamp;
 
         mp4boxOutputFile.addSample(trackID, uint8, {
-          duration,
+          duration: sampleDuration,
           is_sync: chunk.type === 'key',
         });
 
