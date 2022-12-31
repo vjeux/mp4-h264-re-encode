@@ -1,4 +1,4 @@
-# video-encoding-benchmark
+# mp4-h264-reencode
 
 This repo is a demonstration of a pure re-encoding of an mp4-h264 video file with the web APIs.
 
@@ -200,7 +200,7 @@ if (trackID === null) {
 }
 ```
 
-The WebCodec API all works with time described in fractions of a second. This is the most natural representation for humans but not the best for computers. Videos are commonly encoded at 24, 25, 30 or 60 frames per second. So one frame's duration is either 1/24 = 0.0416666, 1/25 = 0.04, 1/30 = 0.03333, 1/60 = 0.01666. They don't have great binary representations.
+The WebCodec API all works with time described in fractions of a second. This is the most natural representation for humans but not the best for computers. Videos are commonly encoded at 24, 25, 30 or 60 frames per second. So one frame's duration is either `1/24 = 0.0416666`, `1/25 = 0.04`, `1/30 = 0.03333`, `1/60 = 0.01666`. They don't have great binary representations.
 
 So the creators of video file formats came up with the concept of a timescale. They remap one second to a number that has better properties. A common timescale is `90000` which is `24 * 25 * 30 * 5`. So a frame duration is now 90000/24 = 3750, 90000/25 = 3600, 90000/30 = 3000, 90000/60 = 1500. All those numbers are easy to represent using integers.
 
@@ -210,7 +210,7 @@ const timescale = 90000;
 
 ...
 
-```
+```javascript
 const totalDuration = track.movie_duration * (timescale / 1000);
 const currentTimestamp = Math.round(
   totalDuration * (encodedFrameIndex / track.nb_samples)
