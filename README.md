@@ -172,3 +172,58 @@ Again, we need to do manual memory management, we need to close the input and ou
 inputFrame.close();
 outputFrame.close();
 ```
+
+## Muxing (MP4Box.js)
+
+The chunk output is a binary blob where the underlying storage is being reused across frames. Because we don't flush the generated mp4 to disk directly but we keep it around till the end, we first need to copy the data in a new storage. This is not an inherent limitation, we can likely flush instantly but I haven't gotten around to figure out just yet.
+
+```javascript
+output(chunk, metadata) {
+  let uint8 = new Uint8Array(chunk.byteLength);
+  chunk.copyTo(uint8);
+```
+
+If you remember earlier, we needed those SPS and PPS configurations, they are back! They are packaged in a `description` object. We can either provide it to the encoder constructor. Or we can leave it out and the encoder will provide one. The idea with this prototype is to re-encode the video so we're not going to use the one from the original video and let the encoder give us one.
+
+There are two ways the encoder will provide the `description`, if you use the default, it will pass a metadata object as second argument for all the key frames with the `description` the mp4 file format expects. This is the easiest in our case and the one we will be using here. If you are curious about the other one, scroll down for the mp4wasm version.
+
+the `description` is going to be put in the avcC box which appears in the track box. So we're going to need to know it before we can create the track. We'll create the track using the `description` on the first frame we process. It's not pretty but it works.
+
+```javascript
+if (trackID === null) {
+  trackID = mp4boxOutputFile.addTrack({
+    width,
+    height,
+    timescale,
+    avcDecoderConfigRecord: metadata.decoderConfig.description
+  });
+}
+```
+
+The WebCodec API all works with time described in fractions of a second. This is the most natural representation for humans but not the best for computers. Videos are commonly encoded at 24, 25, 30 or 60 frames per second. So one frame's duration is either 1/24 = 0.0416666, 1/25 = 0.04, 1/30 = 0.03333, 1/60 = 0.01666. They don't have great binary representations.
+
+So the creators of video file formats came up with the concept of a timescale. They remap one second to a number that has better properties. A common timescale is `90000` which is `24 * 25 * 30 * 5`. So a frame duration is now 90000/24 = 3750, 90000/25 = 3600, 90000/30 = 3000, 90000/60 = 1500. All those numbers are easy to represent using integers.
+
+```javascript
+const timescale = 90000;
+```
+
+...
+
+```
+const totalDuration = track.movie_duration * (timescale / 1000);
+const currentTimestamp = Math.round(
+  totalDuration * (encodedFrameIndex / track.nb_samples)
+);
+const nextTimestamp = Math.round(
+  totalDuration * ((encodedFrameIndex + 1) / track.nb_samples)
+);
+const sampleDuration = nextTimestamp - currentTimestamp;
+```
+
+```javascript
+mp4boxOutputFile.addSample(trackID, uint8, {
+  duration: sampleDuration,
+  is_sync: chunk.type === 'key',
+});
+```
