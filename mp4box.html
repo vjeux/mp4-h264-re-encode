@@ -1,11 +1,6 @@
 <html>
 <script src="mp4box.all.js"></script>
 <script>
-// Useful tools:
-// http://mp4parser.com/
-// https://hexed.it/
-// https://gpac.github.io/mp4box.js/test/filereader.html
-
 async function reencode(file) {
   const startNow = performance.now();
 
@@ -90,8 +85,9 @@ async function reencode(file) {
           });
         }
 
+        const sampleDuration = sampleDurations.shift() / (1_000_000 / timescale);
         mp4boxOutputFile.addSample(trackID, uint8, {
-          duration: sampleDurations.shift() / (1_000_000 / timescale),
+          duration: sampleDuration,
           is_sync: chunk.type === 'key',
         });
 
@@ -140,7 +136,7 @@ async function reencode(file) {
 
     const seconds = (performance.now() - startNow) / 1000;
     progress.innerText =
-      "Encoded in " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
+      "Re-encoded " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
       Math.round(encodedFrameIndex / seconds) + " fps";
   };
 
@@ -149,6 +145,7 @@ async function reencode(file) {
     this.result.fileStart = 0;
     mp4boxInputFile.appendBuffer(this.result);
     mp4boxInputFile.flush();
+
   };
   reader.readAsArrayBuffer(file);
 }
