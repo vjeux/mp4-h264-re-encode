@@ -249,3 +249,20 @@ Once everything is processed, which I will explain how we detect it in the next 
 ```javascript
 mp4boxOutputFile.save("mp4box.mp4");
 ```
+
+## Muxing (mp4wasm)
+
+### Are we using wasm to make it faster? The answer is no.
+
+What's performance intensive in video encoding is to decode and encode specific frames. All of this is done within the WebCodec API from the browser (the encode / decode functions). It is so performance critical in practice that there is dedicated hardware that implements those operations and the WebCodec API let us use it.
+
+The second part which is a performance consideration is allocating and copying data around. Since we're dealing with really big files every memory allocation and copy adds up. WASM adds overhead in this regard where data has to cross to wasm and back for every function call. So while individual operations within the wasm context may be faster, it ends up being slower overall by a few percent in my testing. Both are equivalent in terms of orders of magnitude of performance though.
+
+The muxing and demuxing part is pretty cheap compute wise, the header is a few kilobytes so not a performance concern and for the data piece, it mostly reads/writes a tiny header and then treats the rest as an opaque blob that interacts with the encoder/decoder.
+
+You may be curious about whether file size of the code impacts anything. In practice it doesn't really. The wasm file is 42kb and the wasm js wrapper is 37kb unminified, while mp4box.js (which contains both the read, used by both and write, not used by wasm) is 257kb unminified.
+
+### So if not for performance, why are we using wasm? The answer is code reuse.
+
+There's a lot of high quality and battle tested video manipulating software written in C++ that can be reused. In the case of mp4wasm, they are reusing the [minimp4](https://github.com/lieff/minimp4/) C++ library.
+
