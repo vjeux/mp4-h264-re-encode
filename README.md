@@ -8,24 +8,27 @@ Video editing keeps becoming more and more important as content creation through
 
 But... there's very little documentation or working code to wire this all up online. It takes [150](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.html)-[210](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.html) lines of code, most of them full of gotchas and unusual coding patterns. This repository and README hopes to provide a standalone working baseline with all the steps explained so that you can build up on-top of it (as just re-encoding video files is not the most effective way to warm up your appartment :p).
 
-It takes 10s to re-encode the 20s video using Chrome on my non-m1 Mac Book Pro. Doing the same with Final Cut Pro takes 8s. So performance is in the same ballpark.
+It takes 10s to re-encode the 20s video using Chrome on my non-m1 Mac Book Pro. Doing the same with Final Cut Pro takes 8s. So performance is in the same ballpark and should be good enough for production applications.
 
-Caveat: so far it only works for video tracks, audio tracks still need to be figured out.
+Caveat: so far this repo only implements video tracks, audio tracks still need to be figured out but should be possible.
 
-## Content
+## Repository Content
+
+You can try it live:
+* [mp4box.html](https://vjeux.github.io/mp4-h264-re-encode/mp4box.html)
+* [mp4wasm.html](https://vjeux.github.io/mp4-h264-re-encode/mp4wasm.html)
 
 The repository contains a few files:
-
-* Sample video files. I recorded them using [Minecraft Replay Mod](https://www.replaymod.com/) and trimmed them down using Quicktime.
-  * mob_head_farm_5s.mp4
-  * mob_head_farm_10s.mp4
-  * mob_head_farm_20s.mp4
 * Runnable pages. They have the code to do the re-encoding
   * [mp4box.html](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.html) is the recommended way, it uses [mp4box.js](https://github.com/gpac/mp4box.js/) for demuxing and muxing.
   * [mp4wasm.html](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.html) is there as an example of wasm integration but is a tiny bit slower and has less accurate duration handling. It uses [mp4box.js](https://github.com/gpac/mp4box.js/) for demuxing and [mp4wasm](https://github.com/mattdesl/mp4-wasm) for muxing.
 * Dependencies. They are non-minified so they are easy to edit and debug through to understand how it works.
   * [mp4box.all.js](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.all.js)
   * [mp4wasm.js](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.js)
+* Sample video files. I recorded them using [Minecraft Replay Mod](https://www.replaymod.com/) and trimmed them down using Quicktime.
+  * mob_head_farm_5s.mp4
+  * mob_head_farm_10s.mp4
+  * mob_head_farm_20s.mp4
 
 # How it works
 
@@ -36,6 +39,9 @@ There are four steps to re-encode a video:
 * Putting samples into an mp4 file (muxing)
   * Done with [mp4box.js](https://github.com/gpac/mp4box.js/) in mp4box.html
   * Done with [mp4wasm](https://github.com/mattdesl/mp4-wasm) in mp4wasm.html
+* Saving the file and displaying progress
+
+Let's look at all the steps one by one:
 
 ## Demuxing
 
