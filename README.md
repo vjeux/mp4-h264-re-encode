@@ -51,12 +51,12 @@ Once the first buffer is flushed, mp4box parses the headers and calls onReady wi
 ```javascript
 mp4boxInputFile.onReady = async (info) => {
   const track = info.videoTracks[0];
-  mp4boxInputFile.setExtractionOptions(track.id);
+  mp4boxInputFile.setExtractionOptions(track.id, null, {nbSamples: Infinity});
   mp4boxInputFile.start();
 };
 ```
 
-which will give us all the samples from the buffers loaded at once.
+which will give us all the samples from the buffers loaded at once. Unfortunately, mp4box.js doesn't support a callback when all the samples have been processed and batches it up in groups of 1000. So we'll just disable this arbitrary grouping using `{nbSamples: Infinity}`.
 
 ```javascript
 mp4boxInputFile.onSamples = async (track_id, ref, samples) => {
@@ -146,7 +146,7 @@ encoder.configure({
   width,
   height,
   hardwareAcceleration: 'prefer-hardware',
-  bitrate: 9_000_000,
+  bitrate: 20_000_000,
 });
 ```
 
@@ -158,11 +158,17 @@ const outputFrame = new VideoFrame(bitmap, { timestamp: inputFrame.timestamp });
 
 If we don't do anything, all the frames will be encoded as delta frames. This is optimal in terms of file size but scrubbing through the video will be very slow as we need to go from the beginning and apply the delta frames one by one until we can get the bitmap. On the other hand, making every frame being a key frame will massively bloat the video size. In the 5s video example, it goes from 5mb to 30mb!
 
-The heuristic that people seem to be using in practice is one key frame every few seconds. Youtube is reported to do it every 2 seconds, some mention one up to every 10 seconds. Here's the implementation for doing it every 2 seconds.
+The heuristic that people seem to be using in practice is one key frame every few seconds. Youtube is reported to do it every 2 seconds, quicktime screen recording does it every 4 seconds, some mention up to every 10 seconds. Here's the implementation for doing it every 2 seconds.
 
 ```javascript
+let nextKeyFrameTimestamp = 0;
+// ...
 const keyFrameEveryHowManySeconds = 2;
-const keyFrame = decodedFrameIndex % (Math.round(fps) * keyFrameEveryHowManySeconds) === 0;
+let keyFrame = false;
+if (inputFrame.timestamp >= nextKeyFrameTimestamp) {
+  keyFrame = true;
+  nextKeyFrameTimestamp = inputFrame.timestamp + keyFrameEveryHowManySeconds * 1e6;
+}
 encoder.encode(outputFrame, { keyFrame });
 ```
 
@@ -175,7 +181,13 @@ outputFrame.close();
 
 ## Muxing (MP4Box.js)
 
-The chunk output is a binary blob where the underlying storage is being reused across frames. Because we don't flush the generated mp4 to disk directly but we keep it around till the end, we first need to copy the data in a new storage. This is not an inherent limitation, we can likely flush instantly but I haven't gotten around to figure out just yet.
+We start by creating an empty mp4 file. We'll get the information we need to create all the metadata during the first decoded frame.
+
+```javascript
+const mp4boxOutputFile = MP4Box.createFile();
+```
+
+The chunk received when we encode a frame doesn't contain the actual bytes but we first need to copy them to a Uint8Array using `copyTo`. This is the first time I'm seeing such an API instead of just having a property data, I don't really understand why this choice was made.
 
 ```javascript
 output(chunk, metadata) {
@@ -187,17 +199,8 @@ If you remember earlier, we needed those SPS and PPS configurations, they are ba
 
 There are two ways the encoder will provide the `description`, if you use the default, it will pass a metadata object as second argument for all the key frames with the `description` the mp4 file format expects. This is the easiest in our case and the one we will be using here. If you are curious about the other one, scroll down for the mp4wasm version.
 
-the `description` is going to be put in the avcC box which appears in the track box. So we're going to need to know it before we can create the track. We'll create the track using the `description` on the first frame we process. It's not pretty but it works.
-
 ```javascript
-if (trackID === null) {
-  trackID = mp4boxOutputFile.addTrack({
-    width,
-    height,
-    timescale,
-    avcDecoderConfigRecord: metadata.decoderConfig.description
-  });
-}
+const description = metadata.decoderConfig.description;
 ```
 
 The WebCodec API all works with time described in fractions of a second. This is the most natural representation for humans but not the best for computers. Videos are commonly encoded at 24, 25, 30 or 60 frames per second. So one frame's duration is either `1/24 = 0.0416666`, `1/25 = 0.04`, `1/30 = 0.03333`, `1/60 = 0.01666`. They don't have great binary representations.
@@ -208,22 +211,41 @@ So the creators of video file formats came up with the concept of a timescale. T
 const timescale = 90000;
 ```
 
-...
+We finally have all the information we need to create the metadata related to the video track. We only need to do it once to initialize the header of the mp4 file.
 
 ```javascript
-const totalDuration = track.movie_duration * (timescale / 1000);
-const currentTimestamp = Math.round(
-  totalDuration * (encodedFrameIndex / track.nb_samples)
-);
-const nextTimestamp = Math.round(
-  totalDuration * ((encodedFrameIndex + 1) / track.nb_samples)
-);
-const sampleDuration = nextTimestamp - currentTimestamp;
+if (trackID === null) {
+  trackID = mp4boxOutputFile.addTrack({
+    width,
+    height,
+    timescale,
+    avcDecoderConfigRecord: description,
+  });
+}
 ```
+
+In order to get the duration of the frame, we can translate it from the original duration and its timescale to the timescale of the output video. I believe that the intended way is that we pass the duration to the decode() function but in my testing only some decoded frames have the duration not null. Then, when we encode it we can also give the duration but this time it's always set to 0 on the other side. This whole pipeline works well for the timestamp. We can workaround by creating an array on the side. Since frames are processed in order, we can push and shift safely.
+
+```javascript
+let sampleDurations = [];
+// ...
+for (const sample of samples) {
+  sampleDurations.push(sample.duration * 1_000_000 / sample.timescale);
+// ...
+const sampleDuration = sampleDurations.shift() / (1_000_000 / timescale);
+```
+
+And, finally, we can add the encoded frame, also called Sample apparently, to the mp4 file.
 
 ```javascript
 mp4boxOutputFile.addSample(trackID, uint8, {
   duration: sampleDuration,
   is_sync: chunk.type === 'key',
 });
+```
+
+Once everything is processed, which I will explain how we detect it in the next section, we can have the browser download the file.
+
+```javascript
+mp4boxOutputFile.save("mp4box.mp4");
 ```
