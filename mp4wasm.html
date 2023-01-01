@@ -25,16 +25,18 @@ async function reencode(file) {
 
   let decodedFrameIndex = 0;
   let encodedFrameIndex = 0;
+  let nextKeyFrameTimestamp = 0;
 
-  const mp4BoxInputFile = MP4Box.createFile();
-  mp4BoxInputFile.onError = error => console.error(error);
-  mp4BoxInputFile.onReady = async (info) => {
+  const mp4boxInputFile = MP4Box.createFile();
+  mp4boxInputFile.onError = error => console.error(error);
+  mp4boxInputFile.onReady = async (info) => {
     const track = info.videoTracks[0];
+    const trak = mp4boxInputFile.getTrackById(track.id);
     frameCount = track.nb_samples;
-    fps = (track.nb_samples / track.movie_duration) * 1000;
+    duration = (trak.samples_duration / trak.mdia.mdhd.timescale) * 1000;
+    fps = Math.round((track.nb_samples / duration) * 1000);
     width = track.track_width;
     height = track.track_height;
-    duration = track.movie_duration;
 
     mp4wasm = await new MP4Wasm();
     mp4wasmOutputFile = createVirtualFile();
@@ -55,16 +57,24 @@ async function reencode(file) {
     );
 
     decoder = new VideoDecoder({
-      async output(frame) {
-        const bitmap = await createImageBitmap(frame);
+      async output(inputFrame) {
+        const bitmap = await createImageBitmap(inputFrame);
+
+        const outputFrame = new VideoFrame(bitmap, {
+          timestamp: inputFrame.timestamp,
+        });
 
         const keyFrameEveryHowManySeconds = 2;
-        const keyFrame = decodedFrameIndex % (Math.round(fps) * keyFrameEveryHowManySeconds) === 0;
-        let videoFrame = new VideoFrame(bitmap, { timestamp: frame.timestamp });
-        encoder.encode(videoFrame, { keyFrame });
+        let keyFrame = false;
+        if (inputFrame.timestamp >= nextKeyFrameTimestamp) {
+          keyFrame = true;
+          nextKeyFrameTimestamp = inputFrame.timestamp + keyFrameEveryHowManySeconds * 1e6;
+        }
+        encoder.encode(outputFrame, { keyFrame });
+        inputFrame.close();
+        outputFrame.close();
+
         decodedFrameIndex++;
-        frame.close();
-        videoFrame.close();
         displayProgress();
       },
       error(error) {
@@ -73,7 +83,6 @@ async function reencode(file) {
     });
 
     let description;
-    const trak = mp4BoxInputFile.getTrackById(track.id);
     for (const entry of trak.mdia.minf.stbl.stsd.entries) {
       if (entry.avcC || entry.hvcC) {
         const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
@@ -124,7 +133,7 @@ async function reencode(file) {
     });
 
     mp4boxInputFile.setExtractionOptions(track.id, null, {nbSamples: Infinity});
-    mp4BoxInputFile.start();
+    mp4boxInputFile.start();
   };
 
   function displayProgress() {
@@ -133,7 +142,7 @@ async function reencode(file) {
       "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / frameCount) + "%)\n";
   }
 
-  mp4BoxInputFile.onSamples = async (track_id, ref, samples) => {
+  mp4boxInputFile.onSamples = async (track_id, ref, samples) => {
     for (const sample of samples) {
       decoder.decode(new EncodedVideoChunk({
         type: sample.is_sync ? "key" : "delta",
@@ -166,8 +175,8 @@ async function reencode(file) {
   var reader = new FileReader();
   reader.onload = function() {
     this.result.fileStart = 0;
-    mp4BoxInputFile.appendBuffer(this.result);
-    mp4BoxInputFile.flush();
+    mp4boxInputFile.appendBuffer(this.result);
+    mp4boxInputFile.flush();
   };
   reader.readAsArrayBuffer(file);
 }
