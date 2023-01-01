@@ -2,6 +2,31 @@
 
 This repo is a demonstration of a pure re-encoding of an mp4-h264 video file with the web APIs.
 
+## Motivation
+
+Video editing keeps becoming more and more important as content creation through Youtube, Tik Tok, Reels... is democratized. Browsers finally have all the building blocks to do proper video editing such as [WebCodec](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API), [FileSystem API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_Access_API), hardware accelerated canvas and support in [Web Workers](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API)...
+
+But... there's very little documentation or working code to wire this all up online. It takes [150](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.html)-[210](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.html) lines of code, most of them full of gotchas and unusual coding patterns. This repository and README hopes to provide a standalone working baseline with all the steps explained so that you can build up on-top of it (as just re-encoding video files is not the most effective way to warm up your appartment :p).
+
+Caveat: so far it only works for video tracks, audio tracks are coming up next!
+
+## Content
+
+The repository contains a few files:
+
+* Sample video files. I recorded them using [Minecraft Replay Mod](https://www.replaymod.com/) and trimmed them down using Quicktime.
+  * mob_head_farm_5s.mp4
+  * mob_head_farm_10s.mp4
+  * mob_head_farm_20s.mp4
+* Runnable pages. They have the code to do the re-encoding
+  * [mp4box.html](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.html) is the recommended way, it uses [mp4box.js](https://github.com/gpac/mp4box.js/) for demuxing and muxing.
+  * [mp4wasm.html](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.html) is there as an example of wasm integration but is slower and has less accurate duration handling. It uses [mp4box.js](https://github.com/gpac/mp4box.js/) for demuxing and [mp4wasm](https://github.com/mattdesl/mp4-wasm) for muxing.
+* Dependencies. They are non-minified so they are easy to edit and debug through to understand how it works.
+  * [mp4box.all.js](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.all.js)
+  * [mp4wasm.js](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.js)
+
+# How it works
+
 There are four steps to re-encode a video:
 * Extracting samples from the mp4 file format (demuxing), done with [mp4box.js](https://github.com/gpac/mp4box.js/).
 * Decoding the samples into pixels, done with [WebCodec window.VideoDecoder](https://developer.mozilla.org/en-US/docs/Web/API/VideoDecoder).
@@ -9,8 +34,6 @@ There are four steps to re-encode a video:
 * Putting samples into an mp4 file (muxing)
   * Done with [mp4box.js](https://github.com/gpac/mp4box.js/) in mp4box.html
   * Done with [mp4wasm](https://github.com/mattdesl/mp4-wasm) in mp4wasm.html
-
-The code is very dense so I'm going to split it up and explain it here.
 
 ## Demuxing
 
@@ -99,7 +122,7 @@ for (const sample of samples) {
 }
 ```
 
-So far, the APIs were a bit convoluted but it was fairly generic. Now we're going to need to do some H264-specific shenanigans. In order to decode a video frame, h264 has a bunch of configuration options called PPS (Picture Parameter Set) & SPS (Sequence Parameter Set). Their content isn't super interesting, you can [read on it here](https://www.cardinalpeak.com/blog/the-h-264-sequence-parameter-set). We need to find them and give them to the decoder.
+So far, the APIs were a bit convoluted but it was fairly generic. Now we're going to need to do some h264-specific shenanigans. In order to decode a video frame, h264 has a bunch of configuration options called PPS (Picture Parameter Set) & SPS (Sequence Parameter Set). Their content isn't super interesting, you can [read on it here](https://www.cardinalpeak.com/blog/the-h-264-sequence-parameter-set). We need to find them and give them to the decoder.
 
 The inside of mp4 files is structured as many nested boxes that contain JSON-like values (all encoded differently using a binary format). The box `trak.mdia.minf.stbl.stsd.avcC` contains the PPS and SPS configuration we are looking after. So we use the following piece of code to extract it out and pass it to the encoder.
 
@@ -129,7 +152,7 @@ decoder.configure({
 
 ## Encoding
 
-We're doing this little dance again of creating an encoder and configuring it. I found somewhere the codec `avc1.4d0034` which seems to be working. Its longer description seems to be `MPEG-4 AVC Main Level 5.2` and AVC is synonymous with H264 if you are curious. 
+We're doing this little dance again of creating an encoder and configuring it. I found somewhere the codec `avc1.4d0034` which seems to be working. Its longer description seems to be `MPEG-4 AVC Main Level 5.2` and AVC is synonymous with h264 if you are curious. 
 
 ```javascript
 encoder = new VideoEncoder({
@@ -156,7 +179,7 @@ In the decoder output callback, we first create a VideoFrame object with the bit
 const outputFrame = new VideoFrame(bitmap, { timestamp: inputFrame.timestamp });
 ```
 
-If we don't do anything, all the frames will be encoded as delta frames. This is optimal in terms of file size but scrubbing through the video will be very slow as we need to go from the beginning and apply the delta frames one by one until we can get the bitmap. On the other hand, making every frame being a key frame will massively bloat the video size. In the 5s video example, it goes from 5mb to 30mb!
+If we don't do anything, all the frames will be encoded as delta frames. This is optimal in terms of file size but scrubbing through the video will be very slow as we need to go from the beginning and apply the delta frames one by one until we can get the bitmap. On the other hand, making every frame being a key frame will massively bloat the video size. In the 5s video example, it goes from 13mb to 63mb!
 
 The heuristic that people seem to be using in practice is one key frame every few seconds. Youtube is reported to do it every 2 seconds, quicktime screen recording does it every 4 seconds, some mention up to every 10 seconds. Here's the implementation for doing it every 2 seconds.
 
@@ -257,6 +280,9 @@ mp4boxOutputFile.save("mp4box.mp4");
 What's performance intensive in video encoding is to decode and encode specific frames. All of this is done within the WebCodec API from the browser (the encode / decode functions). It is so performance critical in practice that there is dedicated hardware that implements those operations and the WebCodec API let us use it.
 
 The second part which is a performance consideration is allocating and copying data around. Since we're dealing with really big files every memory allocation and copy adds up. WASM adds overhead in this regard where data has to cross to wasm and back for every function call. So while individual operations within the wasm context may be faster, it ends up being slower overall by a few percent in my testing. Both are equivalent in terms of orders of magnitude of performance though.
+
+* mp4box.html: Re-encoded 1202 frames in 12.07s at 100 fps
+* mp4wasm.html: Re-encoded 1202 frames in 12.52s at 96 fps (tiny bit slower)
 
 The muxing and demuxing part is pretty cheap compute wise, the header is a few kilobytes so not a performance concern and for the data piece, it mostly reads/writes a tiny header and then treats the rest as an opaque blob that interacts with the encoder/decoder.
 
@@ -416,3 +442,14 @@ progress.innerText =
   "Encoded in " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
   Math.round(encodedFrameIndex / seconds) + " fps";
 ```
+
+## Useful Tools
+
+* This tool displays all the metadata from an mp4 and comes as part of mp4box.js. This has been my goto tool for all this project! 
+  * https://gpac.github.io/mp4box.js/test/filereader.html
+* If you are debugging NAL, SPS and PPS, this tool will parse the raw bitstream encoded with annexb.
+  * https://mradionov.github.io/h264-bitstream-viewer/
+* One missing feature that's missing from the first mp4 tool is to show the binary for each box which can be useful at times. This tool shows it, but doesn't have the samples view which is handy.
+  * http://mp4parser.com/
+* At some point I wanted to make sure that the two outputs were bit for bit identical, I used this online hexadecimal editor which came in handy
+  * https://hexed.it/
