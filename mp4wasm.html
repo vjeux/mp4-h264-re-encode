@@ -126,6 +126,8 @@ async function reencode(file) {
   };
 
   function displayProgress() {
+    // Updating the DOM on every frame adds ~20% performance overhead.
+    // return; // Uncomment for benchmarks.
     progress.innerText =
       "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / track.nb_samples) + "%)\n" +
       "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / track.nb_samples) + "%)\n";
