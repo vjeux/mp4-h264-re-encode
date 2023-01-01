@@ -2,11 +2,6 @@
 <script src="mp4box.all.js"></script>
 <script src="mp4wasm.js"></script>
 <script>
-// Useful tools:
-// http://mp4parser.com/
-// https://hexed.it/
-// https://gpac.github.io/mp4box.js/test/filereader.html
-
 async function reencode(file) {
   const startNow = performance.now();
 
@@ -140,8 +135,8 @@ async function reencode(file) {
     for (const sample of samples) {
       decoder.decode(new EncodedVideoChunk({
         type: sample.is_sync ? "key" : "delta",
-        timestamp: 1e6 * sample.cts / sample.timescale,
-        duration: 1e6 * sample.duration / sample.timescale,
+        timestamp: sample.cts * 1_000_000 / sample.timescale,
+        duration: sample.duration * 1_000_000 / sample.timescale,
         data: sample.data
       }));
     }
@@ -162,7 +157,7 @@ async function reencode(file) {
 
     const seconds = (performance.now() - startNow) / 1000;
     progress.innerText =
-      "Encoded in " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
+      "Re-encoded " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
       Math.round(encodedFrameIndex / seconds) + " fps";
   };
 
