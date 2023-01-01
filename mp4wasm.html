@@ -17,33 +17,27 @@ async function reencode(file) {
   let mp4wasmOutputFile;
   let mp4wasmMux;
 
-  let frameCount;
-  let fps;
-  let width;
-  let height;
-  let duration;
-
+  let track = null;
   let decodedFrameIndex = 0;
   let encodedFrameIndex = 0;
   let nextKeyFrameTimestamp = 0;
+  let sampleDurations = [];
 
   const mp4boxInputFile = MP4Box.createFile();
   mp4boxInputFile.onError = error => console.error(error);
   mp4boxInputFile.onReady = async (info) => {
-    const track = info.videoTracks[0];
-    const trak = mp4boxInputFile.getTrackById(track.id);
-    frameCount = track.nb_samples;
-    duration = (trak.samples_duration / trak.mdia.mdhd.timescale) * 1000;
-    fps = Math.round((track.nb_samples / duration) * 1000);
-    width = track.track_width;
-    height = track.track_height;
+    track = info.videoTracks[0];
 
     mp4wasm = await new MP4Wasm();
     mp4wasmOutputFile = createVirtualFile();
+
+    const trak = mp4boxInputFile.getTrackById(track.id);
+    const duration = (trak.samples_duration / trak.mdia.mdhd.timescale) * 1000;
+    const fps = Math.round((track.nb_samples / duration) * 1000);
     mp4wasmMux = mp4wasm.create_muxer(
       {
-        width,
-        height,
+        width: track.track_width,
+        height: track.track_height,
         fps,
         fragmentation: true,
         sequential: false,
@@ -98,8 +92,8 @@ async function reencode(file) {
 
     decoder.configure({
       codec: track.codec,
-      codedHeight: track.video.height,
-      codedWidth: track.video.width,
+      codedHeight: track.track_width,
+      codedWidth: track.track_width,
       hardwareAcceleration: 'prefer-hardware',
       description,
     });
@@ -123,8 +117,8 @@ async function reencode(file) {
 
     encoder.configure({
       codec: 'avc1.4d0034',
-      width,
-      height,
+      width: track.track_width,
+      height: track.track_height,
       avc: {
         format: 'annexb',
       },
@@ -138,8 +132,8 @@ async function reencode(file) {
 
   function displayProgress() {
     progress.innerText =
-      "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / frameCount) + "%)\n" +
-      "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / frameCount) + "%)\n";
+      "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / track.nb_samples) + "%)\n" +
+      "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / track.nb_samples) + "%)\n";
   }
 
   mp4boxInputFile.onSamples = async (track_id, ref, samples) => {
