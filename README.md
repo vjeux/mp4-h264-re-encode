@@ -92,8 +92,8 @@ We feed the decoder all the samples wrapped in an EncodedVideoChunk and some opt
 for (const sample of samples) {
   decoder.decode(new EncodedVideoChunk({
     type: sample.is_sync ? "key" : "delta",
-    timestamp: 1e6 * sample.cts / sample.timescale,
-    duration: 1e6 * sample.duration / sample.timescale,
+    timestamp: sample.cts * 1_000_000 / sample.timescale,
+    duration: sample.duration * 1_000_000 / sample.timescale,
     data: sample.data
   }));
 }
@@ -266,3 +266,94 @@ You may be curious about whether file size of the code impacts anything. In prac
 
 There's a lot of high quality and battle tested video manipulating software written in C++ that can be reused. In the case of mp4wasm, they are reusing the [minimp4](https://github.com/lieff/minimp4/) C++ library.
 
+----------
+
+Now that the performance considerations are out of the way, let's go through how it works. First, we need to create an output mp4 file. It expects a file-like object that has seek and write. We can implement a growing Uint8Array in a few lines. Later on, we'll likely want to use the [File System API](https://developer.chrome.com/articles/file-system-access/).
+
+```javascript
+mp4wasmOutputFile = createVirtualFile();
+
+function createVirtualFile(initialCapacity) {
+  // ...
+  let contents = new Uint8Array(initialCapacity);
+  return {
+    contents: function () { ... },
+    seek: function (offset) { ... },
+    write: function (data) { ... },
+  };
+}
+```
+
+In order to compute the duration of each frame, in mp4box.js implementation we reused the duration of the existing file and converted it between the two timescales. mp4wasm does it differently, it asks for the number of frame per seconds and assigns each frame with that duration. It's a good heuristic but not perfect. In the test file, the very last frame is a bit longer than the rest, so we'd lose that tiny bit of duration, not the end of the world in practice but different.
+
+In order to compute the fps, you need to be careful. In the header boxes there are 5 values that represent duration or timescale. In practice, only 2 of them seem to be used by video players and the other 3 are not accurately written by video encoders. I also wouldn't bet that the two I found to work for the few videos I have tested on are always reliable.
+
+* ✗ mvhd.duration
+* ✗ mvhd.timescale
+* √ trak.samples_duration
+* √ trak.mdia.mdhd.timescale
+* ✗ trak.mdia.mdhd.duration
+
+A more reliable technique may be to read the first frame's duration and compute the fps that way. But that's an exercise for another day as the proper solution is to reuse each frame's duration instead of using fps for it.
+
+```javascript
+const duration = (trak.samples_duration / trak.mdia.mdhd.timescale) * 1000;
+const fps = Math.round((track.nb_samples / duration) * 1000);
+```
+
+With this, we have all the info we need to create the muxer. I don't understand what fragmentation, sequential and hevc do yet. This set of configuration is the same one that mp4box.js outputs by default.
+
+```javascript
+mp4wasmMux = mp4wasm.create_muxer(
+  {
+    width: track.track_width,
+    height: track.track_height,
+    fps,
+    fragmentation: true,
+    sequential: false,
+    hevc: false,
+  },
+```
+
+The way to call wasm is basically writing C code in JavaScript. We first call malloc to allocate some memory in the heap and get a pointer to it. We copy the encoded frame to the wasm heap and call the wasm code with the pointer and size. Then once it's done we free the memory from the heap.
+
+```javascript
+const p = mp4wasm._malloc(uint8.byteLength);
+mp4wasm.HEAPU8.set(uint8, p);
+mp4wasm.mux_nal(mp4wasmMux, p, uint8.byteLength);
+mp4wasm._free(p);
+```
+
+Once the wasm side is done converting the encoded frame into a mp4 box, it calls this js function that gives instructions to seek and write data to the file we created at the beginning.
+
+```javascript
+function mux_write(data_ptr, size, offset) {
+  mp4wasmOutputFile.seek(offset);
+  const data = mp4wasm.HEAPU8.subarray(data_ptr, data_ptr + size);
+  return mp4wasmOutputFile.write(data) !== data.byteLength;
+}
+```
+
+The saga of the PPS and SPS continues. This time we are not reading it from the metadata second argument. Instead we set the format of the encoder to `annexb`. What it does is to encode the PPS and SPS in the encoded frame blob. Instead of just being <size><encoded frame>, it is now in a structure called NALU (Network Abstraction Layer Units). I've spent an hour trying to [read the spec](https://www.rfc-editor.org/rfc/rfc6184) but it wasn't very useful. Instead an example is worth a thousand words.
+
+0x00 0x00 0x00 0x01 0b11100111 <PPS content>
+0x00 0x00 0x00 0x01 0b11100111 <SPS content>
+0x00 0x00 0x00 0x01 0b11100111 <??? content>
+0x00 0x00 0x00 0x01 0b11100111 <Video content>
+
+```javascript
+avc: {
+  format: 'annexb',
+},
+```
+
+```javascript
+mp4wasm.finalize_muxer(mp4wasmMux);
+const data = mp4wasmOutputFile.contents();
+
+let url = URL.createObjectURL(new Blob([data], { type: "video/mp4" }));
+let anchor = document.createElement("a");
+anchor.href = url;
+anchor.download = "mp4wasm.mp4";
+anchor.click();
+```
