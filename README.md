@@ -1,6 +1,6 @@
 # mp4-h264-reencode
 
-This repo is a demonstration of a pure re-encoding of an mp4-h264 video file with the web APIs.
+This repo is a demonstration of a pure re-encoding of an mp4-h264 video file with the web APIs as well as in-depth description of how it works.
 
 ## Motivation
 
@@ -8,7 +8,9 @@ Video editing keeps becoming more and more important as content creation through
 
 But... there's very little documentation or working code to wire this all up online. It takes [150](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.html)-[210](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.html) lines of code, most of them full of gotchas and unusual coding patterns. This repository and README hopes to provide a standalone working baseline with all the steps explained so that you can build up on-top of it (as just re-encoding video files is not the most effective way to warm up your appartment :p).
 
-Caveat: so far it only works for video tracks, audio tracks are coming up next!
+It takes 10s to re-encode the 20s video using Chrome on my non-m1 Mac Book Pro. Doing the same with Final Cut Pro takes 8s. So performance is in the same ballpark.
+
+Caveat: so far it only works for video tracks, audio tracks still need to be figured out.
 
 ## Content
 
@@ -20,7 +22,7 @@ The repository contains a few files:
   * mob_head_farm_20s.mp4
 * Runnable pages. They have the code to do the re-encoding
   * [mp4box.html](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.html) is the recommended way, it uses [mp4box.js](https://github.com/gpac/mp4box.js/) for demuxing and muxing.
-  * [mp4wasm.html](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.html) is there as an example of wasm integration but is slower and has less accurate duration handling. It uses [mp4box.js](https://github.com/gpac/mp4box.js/) for demuxing and [mp4wasm](https://github.com/mattdesl/mp4-wasm) for muxing.
+  * [mp4wasm.html](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.html) is there as an example of wasm integration but is a tiny bit slower and has less accurate duration handling. It uses [mp4box.js](https://github.com/gpac/mp4box.js/) for demuxing and [mp4wasm](https://github.com/mattdesl/mp4-wasm) for muxing.
 * Dependencies. They are non-minified so they are easy to edit and debug through to understand how it works.
   * [mp4box.all.js](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4box.all.js)
   * [mp4wasm.js](https://github.com/vjeux/mp4-h264-reencode/blob/main/mp4wasm.js)
@@ -281,8 +283,8 @@ What's performance intensive in video encoding is to decode and encode specific 
 
 The second part which is a performance consideration is allocating and copying data around. Since we're dealing with really big files every memory allocation and copy adds up. WASM adds overhead in this regard where data has to cross to wasm and back for every function call. So while individual operations within the wasm context may be faster, it ends up being slower overall by a few percent in my testing. Both are equivalent in terms of orders of magnitude of performance though.
 
-* mp4box.html: Re-encoded 1202 frames in 12.07s at 100 fps
-* mp4wasm.html: Re-encoded 1202 frames in 12.52s at 96 fps (tiny bit slower)
+* mp4box.html: Re-encoded 1202 frames in 10.15s at 118 fps
+* mp4wasm.html: Re-encoded 1202 frames in 10.36s at 116 fps (tiny bit slower)
 
 The muxing and demuxing part is pretty cheap compute wise, the header is a few kilobytes so not a performance concern and for the data piece, it mostly reads/writes a tiny header and then treats the rest as an opaque blob that interacts with the encoder/decoder.
 
@@ -423,6 +425,8 @@ let decodedFrameIndex = 0;
 let encodedFrameIndex = 0;
 
 function displayProgress() {
+  // Updating the DOM on every frame adds ~20% performance overhead.
+  // return; // Uncomment for benchmarks.
   progress.innerText =
     "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / track.nb_samples) + "%)\n" +
     "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / track.nb_samples) + "%)\n";
