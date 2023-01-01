@@ -336,17 +336,23 @@ function mux_write(data_ptr, size, offset) {
 
 The saga of the PPS and SPS continues. This time we are not reading it from the metadata second argument. Instead we set the format of the encoder to `annexb`. What it does is to encode the PPS and SPS in the encoded frame blob. Instead of just being <size><encoded frame>, it is now in a structure called NALU (Network Abstraction Layer Units). I've spent an hour trying to [read the spec](https://www.rfc-editor.org/rfc/rfc6184) but it wasn't very useful. Instead an example is worth a thousand words.
 
-0x00 0x00 0x00 0x01 0b11100111 <PPS content>
-0x00 0x00 0x00 0x01 0b11100111 <SPS content>
-0x00 0x00 0x00 0x01 0b11100111 <??? content>
-0x00 0x00 0x00 0x01 0b11100111 <Video content>
+* 00 00 00 01 <0b11100000 | 7> <PPS>
+* 00 00 00 01 <0b11100000 | 8> <SPS>
+* 00 00 00 01 <0b11100000 | x> <Non-relevant>
+* 00 00 00 01 <0b11100000 | 1 or 5> <Video>
 
+Each block starting with `00 00 00 01` then a 8bit flag and then the content. Sadly there's no information about size so we need to iterate through all the bytes looking for the marker and if we want to be thorough properly unescape the content. Once we have extracted the PPS and SPS, we need to repackage it into the avcC mp4 box format.
+ 
+Fortunately for us, mp4wasm does all this for us, we just need to ensure that `annexb` is used before passing the data to it. I wanted to go into a bit of details since I had to do [all the same steps](https://github.com/vjeux/mp4-h264-reencode/pull/3/files) before sending it to mp4box.js before realizing that I could just remove this option and use the metadata.
+ 
 ```javascript
 avc: {
   format: 'annexb',
 },
 ```
 
+Finally once all the samples have been processed, we need to finalize the muxer and use some html trickery to force the browser to download the file.
+ 
 ```javascript
 mp4wasm.finalize_muxer(mp4wasmMux);
 const data = mp4wasmOutputFile.contents();
@@ -356,4 +362,57 @@ let anchor = document.createElement("a");
 anchor.href = url;
 anchor.download = "mp4wasm.mp4";
 anchor.click();
+```
+
+## Closing & Logging
+
+Surprisingly, one of the most challenging aspect of this exercise is knowing when processing is done to save the file and report on progress. In traditional programs you execute operations sequentially and the last line of the file is going to execute when everything above is completed. When operations are asynchronous, you have a callback when each operation is done. But here you call a function on one end per frame and another is called per frame but there isn't a clear link between them.
+ 
+The first attempt I've used is to promisify the decode/output link, but unfortunately we need to send a bunch of frames until it can decode them due to the delta encoding. So, I can't just wait for one to complete before sending the next one.
+
+I found out about a flush() function that returns a promise when all the elements of the queue have been processed. That sounded nice, but there's a catch, if you flush after a encoding a delta frame, it will encode it as a full frame and bloat the file size.
+
+So what you need to do is to send all the decoding instructions, flush the decoder so that all the decoding steps have happened and sent the encoding instructions, and then call flush on the encoder to be notified when all the encoding instructions have been executed. After that, you can close everything and save the file.
+ 
+```javascript
+for (const sample of samples) {
+  decoder.decode(/* ... */);
+}
+await decoder.flush();
+await encoder.flush();
+encoder.close();
+decoder.close();
+```
+ 
+Ideally, what you would like is to have a few frames being decoded and then encoded and keep both the encoding and decoding happen in parallel at the same speed so that you don't accumulate a lot of decoded frames (each is a full bitmap) in memory. Sadly with the current setup, the decoding is prioritized and encoding is happening very slowly until decoding is over and then all the encoding happens at once as you can see in this video.
+
+https://user-images.githubusercontent.com/197597/210186198-be412584-5988-4db5-b936-2a2b84aa0a6e.mov
+
+I don't have a good strategy yet to implement the ideal scenario. We can split the reporting into the two phases. It's going to be hard to estimate the remaining time left with this setup since the two are happening at different rates and not stable over time.
+ 
+```javascript
+// Initialization
+const startNow = performance.now();
+let decodedFrameIndex = 0;
+let encodedFrameIndex = 0;
+
+function displayProgress() {
+  progress.innerText =
+    "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / track.nb_samples) + "%)\n" +
+    "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / track.nb_samples) + "%)\n";
+}
+
+// VideoDecoder::output
+decodedFrameIndex++;
+displayProgress();
+
+// VideoEncoder::output
+encodedFrameIndex++;
+displayProgress();
+
+// Finalize
+const seconds = (performance.now() - startNow) / 1000;
+progress.innerText =
+  "Encoded in " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
+  Math.round(encodedFrameIndex / seconds) + " fps";
 ```
