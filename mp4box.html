@@ -24,8 +24,10 @@ async function reencode(file) {
       async output(inputFrame) {
         const bitmap = await createImageBitmap(inputFrame);
 
+        console.log('inputFrame', inputFrame.duration);
         const outputFrame = new VideoFrame(bitmap, {
           timestamp: inputFrame.timestamp,
+          duration: inputFrame.duration,
         });
 
         const keyFrameEveryHowManySeconds = 2;
@@ -71,6 +73,7 @@ async function reencode(file) {
 
     encoder = new VideoEncoder({
       output(chunk, metadata) {
+        console.log('chunk', chunk.duration);
         let uint8 = new Uint8Array(chunk.byteLength);
         chunk.copyTo(uint8);
 
