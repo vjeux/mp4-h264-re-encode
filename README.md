@@ -109,7 +109,7 @@ We first start by creating a decoder object with its output callback. We can use
 decoder = new VideoDecoder({
   async output(inputFrame) {
     const bitmap = await createImageBitmap(inputFrame);
-    frame.close();
+    inputFrame.close();
   },
   error(error) {
     console.log(error);
