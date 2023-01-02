@@ -368,7 +368,7 @@ function mux_write(data_ptr, size, offset) {
 }
 ```
 
-The saga of the PPS and SPS continues. This time we are not reading it from the metadata second argument. Instead we set the format of the encoder to `annexb`. What it does is to encode the PPS and SPS in the encoded frame blob. Instead of just being <size><encoded frame>, it is now in a structure called NALU (Network Abstraction Layer Units). I've spent an hour trying to [read the spec](https://www.rfc-editor.org/rfc/rfc6184) but it wasn't very useful. Instead an example is worth a thousand words.
+The saga of the PPS and SPS continues. This time we are not reading it from the metadata second argument. Instead we set the format of the encoder to `annexb`. What it does is to encode the PPS and SPS in the encoded frame blob. Instead of just being `<size><encoded frame>`, it is now in a structure called NALU (Network Abstraction Layer Units). I've spent an hour trying to [read the spec](https://www.rfc-editor.org/rfc/rfc6184) but it wasn't very useful. Instead an example is worth a thousand words.
 
 * `00 00 00 01 <0b11100000 | 7> <PPS>`
 * `00 00 00 01 <0b11100000 | 8> <SPS>`
