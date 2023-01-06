@@ -4,23 +4,31 @@
 async function reencode(file) {
   const startNow = performance.now();
 
-  let decoder;
-  let encoder;
+  let videoDecoder;
+  let videoEncoder;
 
-  let track = null;
-  let decodedFrameIndex = 0;
-  let encodedFrameIndex = 0;
-  let nextKeyFrameTimestamp = 0;
-  let sampleDurations = [];
-  let trackID = null;
+  let videoTrack = null;
+  let audioTrack = null;
+  let decodedVideoFrameIndex = 0;
+  let encodedVideoFrameIndex = 0;
+  let videoFrameCount = 0;
+  let audioFrameCount = 0;
+  let decodedAudioFrameIndex = 0;
+  let encodedAudioFrameIndex = 0;
+  let nextVideoKeyFrameTimestamp = 0;
+  let nextAudioKeyFrameTimestamp = 0;
+  let sampleVideoDurations = [];
+  let videoTrackID = null;
+  let audioTrackID = null;
 
   const mp4boxOutputFile = MP4Box.createFile();
   const mp4boxInputFile = MP4Box.createFile();
   mp4boxInputFile.onError = error => console.error(error);
   mp4boxInputFile.onReady = async (info) => {
-    track = info.videoTracks[0];
+    videoTrack = info.videoTracks[0];
+    audioTrack = info.audioTracks[0];
 
-    decoder = new VideoDecoder({
+    videoDecoder = new VideoDecoder({
       async output(inputFrame) {
         const bitmap = await createImageBitmap(inputFrame);
 
@@ -30,15 +38,15 @@ async function reencode(file) {
 
         const keyFrameEveryHowManySeconds = 2;
         let keyFrame = false;
-        if (inputFrame.timestamp >= nextKeyFrameTimestamp) {
+        if (inputFrame.timestamp >= nextVideoKeyFrameTimestamp) {
           keyFrame = true;
-          nextKeyFrameTimestamp = inputFrame.timestamp + keyFrameEveryHowManySeconds * 1e6;
+          nextVideoKeyFrameTimestamp = inputFrame.timestamp + keyFrameEveryHowManySeconds * 1e6;
         }
-        encoder.encode(outputFrame, { keyFrame });
+        videoEncoder.encode(outputFrame, { keyFrame });
         inputFrame.close();
         outputFrame.close();
 
-        decodedFrameIndex++;
+        decodedVideoFrameIndex++;
         displayProgress();
       },
       error(error) {
@@ -47,7 +55,7 @@ async function reencode(file) {
     });
 
     let description;
-    const trak = mp4boxInputFile.getTrackById(track.id);
+    const trak = mp4boxInputFile.getTrackById(videoTrack.id);
     for (const entry of trak.mdia.minf.stbl.stsd.entries) {
       if (entry.avcC || entry.hvcC) {
         const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
@@ -61,37 +69,37 @@ async function reencode(file) {
       }
     }
 
-    decoder.configure({
-      codec: track.codec,
-      codedWidth: track.track_width,
-      codedHeight: track.track_height,
+    videoDecoder.configure({
+      codec: videoTrack.codec,
+      codedWidth: videoTrack.track_width,
+      codedHeight: videoTrack.track_height,
       hardwareAcceleration: 'prefer-hardware',
       description,
     });
 
-    encoder = new VideoEncoder({
+    videoEncoder = new VideoEncoder({
       output(chunk, metadata) {
         let uint8 = new Uint8Array(chunk.byteLength);
         chunk.copyTo(uint8);
 
         const timescale = 90000;
-        if (trackID === null) {
+        if (videoTrackID === null) {
           const description = metadata.decoderConfig.description;
-          trackID = mp4boxOutputFile.addTrack({
-            width: track.track_width,
-            height: track.track_height,
+          videoTrackID = mp4boxOutputFile.addTrack({
+            width: videoTrack.track_width,
+            height: videoTrack.track_height,
             timescale,
             avcDecoderConfigRecord: description,
           });
         }
 
-        const sampleDuration = sampleDurations.shift() / (1_000_000 / timescale);
-        mp4boxOutputFile.addSample(trackID, uint8, {
+        const sampleDuration = sampleVideoDurations.shift() / (1_000_000 / timescale);
+        mp4boxOutputFile.addSample(videoTrackID, uint8, {
           duration: sampleDuration,
           is_sync: chunk.type === 'key',
         });
 
-        encodedFrameIndex++;
+        encodedVideoFrameIndex++;
         displayProgress();
       },
       error(error) {
@@ -99,53 +107,147 @@ async function reencode(file) {
       }
     });
 
-    encoder.configure({
+    videoEncoder.configure({
       codec: 'avc1.4d0034',
-      width: track.track_width,
-      height: track.track_height,
+      width: videoTrack.track_width,
+      height: videoTrack.track_height,
       hardwareAcceleration: 'prefer-hardware',
       bitrate: 20_000_000,
     });
 
-    mp4boxInputFile.setExtractionOptions(track.id, null, {nbSamples: Infinity});
+    mp4boxInputFile.setExtractionOptions(videoTrack.id, null, {nbSamples: Infinity});
+
+    if (audioTrack) {
+      audioDecoder = new AudioDecoder({
+        async output(audioData) {
+          audioEncoder.encode(audioData, { keyFrame: true });
+          audioData.close();
+
+          decodedAudioFrameIndex++;
+          displayProgress();
+        },
+        error(error) {
+          console.error(error);
+        }
+      });
+
+      const audioCodec = 'mp4a.40.02';
+
+      audioDecoder.configure({
+        codec: audioCodec, //audioTrack.codec,
+        numberOfChannels: audioTrack.audio.channel_count,
+        sampleRate: audioTrack.audio.sample_rate,
+      });
+
+      audioEncoder = new AudioEncoder({
+        output(chunk, metadata) {
+          let uint8 = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(uint8);
+
+          const timescale = 90000;
+          if (audioTrackID === null) {
+            // audioTrackID = mp4boxOutputFile.addTrack({
+            //   type: 'mp4a',
+            //   timescale,
+            // });
+          }
+
+          console.log(encodedAudioFrameIndex, uint8);
+
+          // mp4boxOutputFile.addSample(audioTrackID, uint8, {
+          //   duration: chunk.duration / (1_000_000 / timescale),
+          //   is_sync: chunk.type === 'key',
+          // });
+
+          encodedAudioFrameIndex++;
+          displayProgress();
+        },
+        error(error) {
+          console.error(error);
+        }
+      });
+
+
+      audioEncoder.configure({
+        codec: audioCodec,
+        numberOfChannels: audioTrack.audio.channel_count,
+        sampleRate: audioTrack.audio.sample_rate,
+      });
+
+      mp4boxInputFile.setExtractionOptions(audioTrack.id, null, {nbSamples: Infinity});
+    }
+
     mp4boxInputFile.start();
   };
 
   function displayProgress() {
     progress.innerText =
-      "Decoding frame " + decodedFrameIndex + " (" + Math.round(100 * decodedFrameIndex / track.nb_samples) + "%)\n" +
-      "Encoding frame " + encodedFrameIndex + " (" + Math.round(100 * encodedFrameIndex / track.nb_samples) + "%)\n";
+      "Decoding video frame " + decodedVideoFrameIndex + " (" + Math.round(100 * decodedVideoFrameIndex / videoFrameCount) + "%)\n" +
+      "Encoding video frame " + encodedVideoFrameIndex + " (" + Math.round(100 * encodedVideoFrameIndex / videoFrameCount) + "%)\n";
+    if (audioTrack) {
+      progress.innerText +=
+        "Decoding audio frame " + decodedAudioFrameIndex + " (" + Math.round(100 * decodedAudioFrameIndex / audioFrameCount) + "%)\n" +
+        "Encoding audio frame " + encodedAudioFrameIndex + " (" + Math.round(100 * encodedAudioFrameIndex / audioFrameCount) + "%)\n";
+    }
   }
 
-  mp4boxInputFile.onSamples = async (track_id, ref, samples) => {
+  mp4boxInputFile.onSamples = function(track_id, ref, samples) {
     for (const sample of samples) {
-      sampleDurations.push(sample.duration * 1_000_000 / sample.timescale);
-      decoder.decode(new EncodedVideoChunk({
+      const chunk = {
         type: sample.is_sync ? "key" : "delta",
         timestamp: sample.cts * 1_000_000 / sample.timescale,
         duration: sample.duration * 1_000_000 / sample.timescale,
         data: sample.data
-      }));
+      };
+      if (track_id === videoTrack.id) {
+        videoFrameCount++;
+        sampleVideoDurations.push(sample.duration * 1_000_000 / sample.timescale);
+        videoDecoder.decode(new EncodedVideoChunk(chunk));
+      } else {
+        audioFrameCount++;
+        audioDecoder.decode(new EncodedAudioChunk(chunk));
+      }
     }
-    await decoder.flush();
-    await encoder.flush();
-    encoder.close();
-    decoder.close();
+    if (track_id !== videoTrack.id) {
+      console.log('Number of audio frames:', audioFrameCount);
+    }
+  }
 
+  async function onComplete() {
     mp4boxOutputFile.save("mp4box.mp4");
 
     const seconds = (performance.now() - startNow) / 1000;
     progress.innerText =
-      "Re-encoded " + encodedFrameIndex + " frames in " + (Math.round(seconds * 100) / 100) + "s at " +
-      Math.round(encodedFrameIndex / seconds) + " fps";
+      "Re-encoded " + encodedVideoFrameIndex + " video frames in " + (Math.round(seconds * 100) / 100) + "s at " +
+      Math.round(encodedVideoFrameIndex / seconds) + " fps\n";
+    if (audioTrack) {
+      progress.innerText +=
+        "Re-encoded audio " + encodedAudioFrameIndex + " video frames in " + (Math.round(seconds * 100) / 100) + "s at " +
+        Math.round(encodedAudioFrameIndex / seconds) + " fps";
+    }
   };
 
   var reader = new FileReader();
-  reader.onload = function() {
+  reader.onload = async function() {
     this.result.fileStart = 0;
     mp4boxInputFile.appendBuffer(this.result);
     mp4boxInputFile.flush();
 
+    if (audioTrack) {
+      await audioDecoder.flush();
+      audioDecoder.close();
+    }
+    await videoDecoder.flush();
+    videoDecoder.close();
+
+    if (audioTrack) {
+      await audioEncoder.flush();
+      audioEncoder.close();
+    }
+    await videoEncoder.flush();
+    videoEncoder.close();
+
+    onComplete();
   };
   reader.readAsArrayBuffer(file);
 }
