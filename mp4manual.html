@@ -239,19 +239,19 @@ async function reencode(file) {
     mp4boxInputFile.appendBuffer(this.result);
     mp4boxInputFile.flush();
 
+    await videoDecoder.flush();
+    videoDecoder.close();
     if (audioTrack) {
       await audioDecoder.flush();
       audioDecoder.close();
     }
-    await videoDecoder.flush();
-    videoDecoder.close();
 
+    await videoEncoder.flush();
+    videoEncoder.close();
     if (audioTrack) {
       await audioEncoder.flush();
       audioEncoder.close();
     }
-    await videoEncoder.flush();
-    videoEncoder.close();
 
     onComplete();
   };
@@ -300,6 +300,7 @@ function createMP4File() {
 }
 
 function addTrak(mp4File, config) {
+  const isVideo = config.type === "video";
   const moov = mp4File.moov;
   const trak = moov.add("trak");
 
@@ -332,24 +333,24 @@ function addTrak(mp4File, config) {
   const mdhd = mdia.add("mdhd")
     .set("creation_time", 0)
     .set("modification_time", 0)
-    .set("timescale", config.type === "video" ? VIDEO_TIMESCALE : AUDIO_TIMESCALE)
+    .set("timescale", isVideo ? VIDEO_TIMESCALE : AUDIO_TIMESCALE)
     .set("duration", 0)
     .set("language", 21956)
     .set("languageString", "und");
 
   const hdlr = mdia.add("hdlr")
-    .set("handler", config.type === "video" ? "vide" : "soun")
+    .set("handler", isVideo ? "vide" : "soun")
     .set("name", "");
 
   const minf = mdia.add("minf");
 
-  if (config.type === "video") {
+  if (isVideo) {
     const vmhd = minf.add("vmhd")
       .set("graphicsmode", 0)
       .set("opcolor", [ 0, 0, 0 ]);
   } else {
     const smhd = minf.add("smhd")
-      .set("flags", 0)
+      .set("flags", 1)
       .set("balance", 0);
   }
 
@@ -361,18 +362,18 @@ function addTrak(mp4File, config) {
 
   var stbl = minf.add("stbl");
 
-  const sample_description_entry = new BoxParser.avc1SampleEntry();
-  sample_description_entry.data_reference_index = 1;
-  sample_description_entry
-    .set("width", config.width || 0)
-    .set("height", config.height || 0)
-    .set("horizresolution", 0x48 << 16)
-    .set("vertresolution", 0x48 << 16)
-    .set("frame_count", 1)
-    .set("compressorname", "")
-    .set("depth", 0x18);
+  if (isVideo) {
+    const sample_description_entry = new BoxParser.avc1SampleEntry();
+    sample_description_entry.data_reference_index = 1;
+    sample_description_entry
+      .set("width", config.width || 0)
+      .set("height", config.height || 0)
+      .set("horizresolution", 0x48 << 16)
+      .set("vertresolution", 0x48 << 16)
+      .set("frame_count", 1)
+      .set("compressorname", "")
+      .set("depth", 0x18);
 
-  if (config.type === "video") {
     var avcC = new BoxParser.avcCBox();
     var stream = new MP4BoxStream(config.avcDecoderConfigRecord);
     avcC.parse(stream);
@@ -395,7 +396,7 @@ function addTrak(mp4File, config) {
     .set("sample_counts", [])
     .set("sample_deltas", []);
 
-  if (config.type === "video") {
+  if (isVideo) {
     const stss = stbl.add("stss")
       .set("sample_numbers", [])
   }
@@ -414,23 +415,26 @@ function addTrak(mp4File, config) {
   return trak;
 }
 
-let isFirstSample = true;
+let isFirstVideoSample = true;
 let chunkOffset = 40;
 function addSample(mp4File, trak, data, isSync, duration) {
   const isVideo = trak.mdia.hdlr.handler === 'vide';
-  if (isFirstSample && isVideo) {
+
+  if (isFirstVideoSample && isVideo) {
+    isFirstVideoSample = false;
     const headerSize = 4 + data[0] << 24 + data[1] << 16 + data[2] << 8 + data[3];
     data = data.slice(headerSize);
-    isFirstSample = false;
   }
 
   mp4File.mdat.parts.push(data);
 
   const scaledDuration = duration / (isVideo ? VIDEO_TIMESCALE : AUDIO_TIMESCALE) * 1000;
-  mp4File.moov.mvhd.duration += scaledDuration;
   trak.samples_duration += scaledDuration;
   trak.tkhd.duration += scaledDuration;
   trak.mdia.mdhd.duration += duration;
+  if (isVideo) {
+    mp4File.moov.mvhd.duration += scaledDuration;
+  }
 
   const stbl = trak.mdia.minf.stbl;
 
