@@ -447,7 +447,9 @@ function addSample(mp4File, trak, data, isSync, duration) {
   }
 
   if (isVideo && isSync) {
-    stbl.stss.sample_numbers.push(mp4File.mdat.parts.length);
+    stbl.stss.sample_numbers.push(
+      stbl.stts.sample_counts.reduce((a, b) => a + b)
+    );
   }
 
   stbl.stco.chunk_offsets.push(chunkOffset);
