@@ -31,98 +31,101 @@ async function reencode(file) {
     videoTrack = info.videoTracks[0];
     audioTrack = info.audioTracks[0];
 
-    videoDecoder = new VideoDecoder({
-      async output(inputFrame) {
-        const bitmap = await createImageBitmap(inputFrame);
+    if (videoTrack) {
+      videoDecoder = new VideoDecoder({
+        async output(inputFrame) {
+          const bitmap = await createImageBitmap(inputFrame);
 
-        const outputFrame = new VideoFrame(bitmap, {
-          timestamp: inputFrame.timestamp,
-        });
+          const outputFrame = new VideoFrame(bitmap, {
+            timestamp: inputFrame.timestamp,
+          });
 
-        const keyFrameEveryHowManySeconds = 2;
-        let keyFrame = false;
-        if (inputFrame.timestamp >= nextVideoKeyFrameTimestamp) {
-          keyFrame = true;
-          nextVideoKeyFrameTimestamp = inputFrame.timestamp + keyFrameEveryHowManySeconds * 1e6;
+          const keyFrameEveryHowManySeconds = 2;
+          let keyFrame = false;
+          if (inputFrame.timestamp >= nextVideoKeyFrameTimestamp) {
+            keyFrame = true;
+            nextVideoKeyFrameTimestamp = inputFrame.timestamp + keyFrameEveryHowManySeconds * 1e6;
+          }
+          videoEncoder.encode(outputFrame, { keyFrame });
+          inputFrame.close();
+          outputFrame.close();
+
+          decodedVideoFrameIndex++;
+          displayProgress();
+        },
+        error(error) {
+          console.error(error);
         }
-        videoEncoder.encode(outputFrame, { keyFrame });
-        inputFrame.close();
-        outputFrame.close();
+      });
 
-        decodedVideoFrameIndex++;
-        displayProgress();
-      },
-      error(error) {
-        console.error(error);
-      }
-    });
-
-    let description;
-    const trak = mp4boxInputFile.getTrackById(videoTrack.id);
-    for (const entry of trak.mdia.minf.stbl.stsd.entries) {
-      if (entry.avcC || entry.hvcC) {
-        const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
-        if (entry.avcC) {
-          entry.avcC.write(stream);
-        } else {
-          entry.hvcC.write(stream);
+      let description;
+      const trak = mp4boxInputFile.getTrackById(videoTrack.id);
+      for (const entry of trak.mdia.minf.stbl.stsd.entries) {
+        if (entry.avcC || entry.hvcC) {
+          const stream = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+          if (entry.avcC) {
+            entry.avcC.write(stream);
+          } else {
+            entry.hvcC.write(stream);
+          }
+          description = new Uint8Array(stream.buffer, 8); // Remove the box header.
+          break;
         }
-        description = new Uint8Array(stream.buffer, 8); // Remove the box header.
-        break;
       }
-    }
 
-    videoDecoder.configure({
-      codec: videoTrack.codec,
-      codedWidth: videoTrack.track_width,
-      codedHeight: videoTrack.track_height,
-      hardwareAcceleration: 'prefer-hardware',
-      description,
-    });
+      videoDecoder.configure({
+        codec: videoTrack.codec,
+        codedWidth: videoTrack.track_width,
+        codedHeight: videoTrack.track_height,
+        hardwareAcceleration: 'prefer-hardware',
+        description,
+      });
 
-    videoEncoder = new VideoEncoder({
-      output(chunk, metadata) {
-        let uint8 = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(uint8);
+      videoEncoder = new VideoEncoder({
+        output(chunk, metadata) {
+          let uint8 = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(uint8);
 
-        if (videoTrak === null) {
-          videoTrak = addTrak(
+          if (videoTrak === null) {
+            videoTrak = addTrak(
+              mp4boxOutputFile,
+              {
+                type: 'video',
+                width: videoTrack.track_width,
+                height: videoTrack.track_height,
+                avcDecoderConfigRecord: metadata.decoderConfig.description,
+              }
+            );
+          }
+
+          const sampleDuration = sampleVideoDurations.shift() / (1_000_000 / VIDEO_TIMESCALE);
+          addSample(
             mp4boxOutputFile,
-            {
-              type: 'video',
-              width: videoTrack.track_width,
-              height: videoTrack.track_height,
-              avcDecoderConfigRecord: metadata.decoderConfig.description,
-            }
+            videoTrak,
+            uint8,
+            chunk.type === 'key',
+            sampleDuration,
+            /* addDuration */ true,
           );
+
+          encodedVideoFrameIndex++;
+          displayProgress();
+        },
+        error(error) {
+          console.error(error);
         }
+      });
 
-        const sampleDuration = sampleVideoDurations.shift() / (1_000_000 / VIDEO_TIMESCALE);
-        addSample(
-          mp4boxOutputFile,
-          videoTrak,
-          uint8,
-          chunk.type === 'key',
-          sampleDuration,
-        );
+      videoEncoder.configure({
+        codec: 'avc1.4d0034',
+        width: videoTrack.track_width,
+        height: videoTrack.track_height,
+        hardwareAcceleration: 'prefer-hardware',
+        bitrate: 20_000_000,
+      });
 
-        encodedVideoFrameIndex++;
-        displayProgress();
-      },
-      error(error) {
-        console.error(error);
-      }
-    });
-
-    videoEncoder.configure({
-      codec: 'avc1.4d0034',
-      width: videoTrack.track_width,
-      height: videoTrack.track_height,
-      hardwareAcceleration: 'prefer-hardware',
-      bitrate: 20_000_000,
-    });
-
-    mp4boxInputFile.setExtractionOptions(videoTrack.id, null, {nbSamples: Infinity});
+      mp4boxInputFile.setExtractionOptions(videoTrack.id, null, {nbSamples: Infinity});
+    }
 
     if (audioTrack) {
       audioDecoder = new AudioDecoder({
@@ -167,6 +170,7 @@ async function reencode(file) {
             uint8,
             chunk.type === 'key',
             sampleDuration,
+            /* addDuration */ !videoTrack,
           );
 
           encodedAudioFrameIndex++;
@@ -190,9 +194,12 @@ async function reencode(file) {
   };
 
   function displayProgress() {
-    progress.innerText =
-      "Decoding video frame " + decodedVideoFrameIndex + " (" + Math.round(100 * decodedVideoFrameIndex / videoFrameCount) + "%)\n" +
-      "Encoding video frame " + encodedVideoFrameIndex + " (" + Math.round(100 * encodedVideoFrameIndex / videoFrameCount) + "%)\n";
+    progress.innerText = '';
+    if (videoTrack) {
+      progress.innerText +=
+        "Decoding video frame " + decodedVideoFrameIndex + " (" + Math.round(100 * decodedVideoFrameIndex / videoFrameCount) + "%)\n" +
+        "Encoding video frame " + encodedVideoFrameIndex + " (" + Math.round(100 * encodedVideoFrameIndex / videoFrameCount) + "%)\n";
+    }
     if (audioTrack) {
       progress.innerText +=
         "Decoding audio frame " + decodedAudioFrameIndex + " (" + Math.round(100 * decodedAudioFrameIndex / audioFrameCount) + "%)\n" +
@@ -208,7 +215,7 @@ async function reencode(file) {
         duration: sample.duration * 1_000_000 / sample.timescale,
         data: sample.data
       };
-      if (track_id === videoTrack.id) {
+      if (videoTrack && track_id === videoTrack.id) {
         videoFrameCount++;
         sampleVideoDurations.push(sample.duration * 1_000_000 / sample.timescale);
         videoDecoder.decode(new EncodedVideoChunk(chunk));
@@ -223,12 +230,14 @@ async function reencode(file) {
     mp4boxOutputFile.save("mp4manual.mp4");
 
     const seconds = (performance.now() - startNow) / 1000;
-    progress.innerText =
-      "Re-encoded " + encodedVideoFrameIndex + " video frames in " + (Math.round(seconds * 100) / 100) + "s at " +
-      Math.round(encodedVideoFrameIndex / seconds) + " fps\n";
+    if (videoTrack) {
+      progress.innerText =
+        "Re-encoded " + encodedVideoFrameIndex + " video frames in " + (Math.round(seconds * 100) / 100) + "s at " +
+        Math.round(encodedVideoFrameIndex / seconds) + " fps\n";
+    }
     if (audioTrack) {
       progress.innerText +=
-        "Re-encoded audio " + encodedAudioFrameIndex + " video frames in " + (Math.round(seconds * 100) / 100) + "s at " +
+        "Re-encoded " + encodedAudioFrameIndex + " audio frames in " + (Math.round(seconds * 100) / 100) + "s at " +
         Math.round(encodedAudioFrameIndex / seconds) + " fps";
     }
   };
@@ -239,15 +248,19 @@ async function reencode(file) {
     mp4boxInputFile.appendBuffer(this.result);
     mp4boxInputFile.flush();
 
-    await videoDecoder.flush();
-    videoDecoder.close();
+    if (videoTrack) {
+      await videoDecoder.flush();
+      videoDecoder.close();
+    }
     if (audioTrack) {
       await audioDecoder.flush();
       audioDecoder.close();
     }
 
-    await videoEncoder.flush();
-    videoEncoder.close();
+    if (videoTrack) {
+      await videoEncoder.flush();
+      videoEncoder.close();
+    }
     if (audioTrack) {
       await audioEncoder.flush();
       audioEncoder.close();
@@ -417,7 +430,7 @@ function addTrak(mp4File, config) {
 
 let isFirstVideoSample = true;
 let chunkOffset = 40;
-function addSample(mp4File, trak, data, isSync, duration) {
+function addSample(mp4File, trak, data, isSync, duration, addDuration) {
   const isVideo = trak.mdia.hdlr.handler === 'vide';
 
   if (isFirstVideoSample && isVideo) {
@@ -432,7 +445,7 @@ function addSample(mp4File, trak, data, isSync, duration) {
   trak.samples_duration += scaledDuration;
   trak.tkhd.duration += scaledDuration;
   trak.mdia.mdhd.duration += duration;
-  if (isVideo) {
+  if (addDuration) {
     mp4File.moov.mvhd.duration += scaledDuration;
   }
 
