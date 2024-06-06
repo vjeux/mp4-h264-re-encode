@@ -118,7 +118,10 @@ async function reencode(file) {
         format: 'annexb',
       },
       hardwareAcceleration: 'prefer-hardware',
-      bitrate: 20_000_000,
+      bitrate: 14_000_000,
+      alpha: 'discard',
+      bitrateMode: 'variable',
+      latencyMode: 'realtime',
     });
 
     mp4boxInputFile.setExtractionOptions(track.id, null, {nbSamples: Infinity});

@@ -121,7 +121,10 @@ async function reencode(file) {
         width: videoTrack.track_width,
         height: videoTrack.track_height,
         hardwareAcceleration: 'prefer-hardware',
-        bitrate: 20_000_000,
+        bitrate: 14_000_000,
+        alpha: 'discard',
+        bitrateMode: 'variable',
+        latencyMode: 'realtime',
       });
 
       mp4boxInputFile.setExtractionOptions(videoTrack.id, null, {nbSamples: Infinity});

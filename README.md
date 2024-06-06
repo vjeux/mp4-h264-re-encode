@@ -453,6 +453,24 @@ progress.innerText =
   Math.round(encodedFrameIndex / seconds) + " fps";
 ```
 
+## Encoding Results
+
+| Filename              | Original Size | Chrome\* | Safari† | Firefox‡ |
+| --------------------- | ------------: | -------: | ------: | -------: |
+| mob_head_farm_5s.mp4  |       14.6 MB |  16.7 MB | 11.5 MB |   8.9 MB |
+| mob_head_farm_10s.mp4 |       27.8 MB |  33.5 MB | 22.8 MB |  17.7 MB |
+| mob_head_farm_20s.mp4 |       49.8 MB |  66.7 MB | 45.6 MB |  35.3 MB |
+
+\* Chrome Version 125.0.6422.142 (Official Build) (arm64)
+
+† Safari Version 17.5 (19618.2.12.11.6)
+
+‡ Firefox Nightly 127.0a1 (2024-04-24) (64-bit)
+
+## Open Issues
+
+- [ ] Order `VideoFrame`s by timestamp. VideoDecoder callback `output` is not guaranteed to be called in presentation order. This can lead to seemingly _jerky_ outputs after encoding because frames are then encoded out of order. This is a prominent issue in Safari.
+
 ## Useful Tools
 
 * This tool displays all the metadata from an mp4 and comes as part of mp4box.js. This has been my goto tool for all this project! 
